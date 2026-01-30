@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg, #ffffff);
+  color: var(--text, #1a202c);
+}
+
+body {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+body::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.reader-prose {
+  color: var(--text);
+}
+
+.reader-prose :where(h1, h2, h3, h4, h5, h6) {
+  color: var(--text);
+}
+
+.reader-prose :where(a) {
+  color: var(--text);
+  text-decoration-color: var(--text-muted);
+}
+
+.reader-prose :where(blockquote) {
+  color: var(--text);
+  border-left-color: var(--text-muted);
+}
+
+.reader-prose :where(code) {
+  color: var(--text);
+}
