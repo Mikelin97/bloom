@@ -211,7 +211,7 @@ export default function InteractionPanel() {
                   {anchor.text}
                 </p>
                 <div className="mt-3 text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
-                  {anchor.bookTitle} · {anchor.chapterTitle}
+                  {anchor.bookTitle} - {anchor.chapterTitle}
                 </div>
                 <p className="mt-2 text-xs text-[var(--text-muted)]">
                   {anchor.chapterSummary}

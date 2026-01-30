@@ -37,15 +37,17 @@ export interface InteractionState {
   mode: InteractionMode;
   anchor: AnchorContext | null;
   messages: Message[];
+  viewportText: string;
   roundTable: RoundTableState;
 }
 
 interface InteractionActions {
   setMode: (mode: InteractionMode) => void;
   setAnchor: (id: string, text: string) => void;
+  setViewportText: (text: string) => void;
   sendMessage: (text: string) => void;
   inviteRoundTable: () => void;
-  continueRoundTable: (promptOverride?: string) => void;
+  continueRoundTable: () => void;
   raiseHand: () => void;
   clearConversation: () => void;
 }
@@ -57,6 +59,9 @@ interface InteractionContextValue {
 
 const InteractionContext = createContext<InteractionContextValue | undefined>(undefined);
 
+const API_BASE = import.meta.env.VITE_API_BASE || '';
+const MAX_HISTORY = 8;
+
 const BOOK_META = {
   bookTitle: "Poor Charlie's Almanack",
   author: 'Charles T. Munger',
@@ -66,17 +71,12 @@ const BOOK_META = {
 };
 
 const PERSONA_ORDER: Persona[] = ['skeptic', 'historian', 'pragmatist'];
-const TYPE_SPEED_MS = 50;
 
 function createId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
   return `id_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-}
-
-function pick<T>(options: T[]) {
-  return options[Math.floor(Math.random() * options.length)];
 }
 
 function buildAnchor(text: string, id: string): AnchorContext {
@@ -87,50 +87,34 @@ function buildAnchor(text: string, id: string): AnchorContext {
   };
 }
 
-function trimSnippet(text: string, limit: number) {
-  if (!text) return '';
-  const words = text.split(/\s+/).filter(Boolean);
-  return words.length <= limit ? words.join(' ') : `${words.slice(0, limit).join(' ')}...`;
+function normalizeText(value: string) {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
-function generateMentorResponse(prompt: string, anchor?: AnchorContext | null) {
-  const validations = [
-    'Great question - this is a subtle passage.',
-    "You're noticing a real tension in the text.",
-    'That line is doing more work than it first appears.'
-  ];
-  const explanations = [
-    'A practical read is to treat it as a reminder that ideas outlive moments and people.',
-    'The author is nudging you to weigh experience against received wisdom.',
-    "It's a contrast between what is remembered and what is still useful."
-  ];
-  const hooks = [
-    'Where else in this chapter do you see the same contrast?',
-    'How does this idea show up in your own reading habits?',
-    'What personal example would support or challenge this interpretation?'
-  ];
-  const anchorSnippet = anchor?.text ? `In the line beginning "${trimSnippet(anchor.text, 14)}", ` : '';
-  return `${pick(validations)} ${anchorSnippet}${pick(explanations)} ${pick(hooks)}`;
-}
-
-function generatePersonaReply(
-  persona: Persona,
-  prompt: string,
-  anchor?: AnchorContext | null
-) {
-  const anchorSnippet = anchor?.text ? `"${trimSnippet(anchor.text, 12)}"` : 'this passage';
-  const topic = prompt || 'this idea';
-
-  switch (persona) {
-    case 'skeptic':
-      return `I'm not convinced ${topic} fully follows from ${anchorSnippet}. What evidence does the author actually give, and what counterexample would weaken the claim?`;
-    case 'historian':
-      return `Placed in its era, ${anchorSnippet} echoes classical arguments about civic legacy and learning. How does that historical backdrop shift your interpretation of ${topic}?`;
-    case 'pragmatist':
-      return `If ${topic} is true, the takeaway is practical: test it in how you read or act today. What's one concrete behavior you would change after this section?`;
-    default:
-      return '';
+function limitWords(value: string, limit: number) {
+  const words = value.split(/\s+/).filter(Boolean);
+  if (words.length <= limit) {
+    return words.join(' ');
   }
+  return words.slice(0, limit).join(' ');
+}
+
+function buildHistory(
+  sourceMessages: Message[],
+  modeFilter?: InteractionMode,
+  labelPersonas?: boolean
+) {
+  return sourceMessages
+    .filter((message) => !modeFilter || message.mode === modeFilter)
+    .slice(-MAX_HISTORY)
+    .map((message) => ({
+      role: message.role === 'user' ? 'user' : 'assistant',
+      content:
+        labelPersonas && message.role === 'ai'
+          ? `${message.persona.toUpperCase()}: ${message.content}`
+          : message.content
+    }))
+    .filter((message) => message.content.length > 0);
 }
 
 export function InteractionProvider({ children }: { children: React.ReactNode }) {
@@ -138,20 +122,19 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     mode: 'IDLE',
     anchor: null,
     messages: [],
+    viewportText: '',
     roundTable: {
       sessionId: null,
       turnCount: 0,
-      maxTurnsBeforePause: 4,
+      maxTurnsBeforePause: 3,
       isOrchestrating: false,
       awaitingUser: false,
       nextPersonaIndex: 0
     }
   });
 
-  const typingIntervals = useRef<Set<number>>(new Set());
-  const orchestrationToken = useRef<{ cancelled: boolean }>({ cancelled: false });
-  const lastAnchorId = useRef<string | null>(null);
   const stateRef = useRef(state);
+  const activeAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     stateRef.current = state;
@@ -170,18 +153,26 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     }));
   };
 
-  const clearTypingIntervals = () => {
-    typingIntervals.current.forEach((intervalId) => window.clearInterval(intervalId));
-    typingIntervals.current.clear();
+  const cancelActiveStream = () => {
+    if (activeAbort.current) {
+      activeAbort.current.abort();
+      activeAbort.current = null;
+    }
   };
 
-  const typeMessage = (
-    persona: Persona,
-    content: string,
-    mode: InteractionMode,
-    anchorId?: string,
-    cancelToken?: { cancelled: boolean }
-  ) => {
+  const streamFromApi = async ({
+    endpoint,
+    payload,
+    persona,
+    mode,
+    anchorId
+  }: {
+    endpoint: string;
+    payload: Record<string, unknown>;
+    persona: Persona;
+    mode: InteractionMode;
+    anchorId?: string;
+  }) => {
     const id = createId();
     appendMessage({
       id,
@@ -194,84 +185,173 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
       timestamp: new Date().toISOString()
     });
 
-    return new Promise<void>((resolve) => {
-      let index = 0;
-      const intervalId = window.setInterval(() => {
-        if (cancelToken?.cancelled) {
-          window.clearInterval(intervalId);
-          typingIntervals.current.delete(intervalId);
-          updateMessage(id, { status: 'done' });
-          resolve();
-          return;
+    let currentText = '';
+    let aborted = false;
+    const controller = new AbortController();
+    activeAbort.current = controller;
+
+    try {
+      const response = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream'
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let done = false;
+
+      while (!done) {
+        const { value, done: streamDone } = await reader.read();
+        if (streamDone) {
+          break;
         }
-        index += 1;
-        updateMessage(id, { content: content.slice(0, index) });
-        if (index >= content.length) {
-          window.clearInterval(intervalId);
-          typingIntervals.current.delete(intervalId);
-          updateMessage(id, { status: 'done' });
-          resolve();
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split('\n\n');
+        buffer = chunks.pop() ?? '';
+
+        for (const chunk of chunks) {
+          const lines = chunk.split('\n');
+          let dataPayload = '';
+          for (const line of lines) {
+            if (line.startsWith('data:')) {
+              dataPayload += line.replace(/^data:\s*/, '');
+            }
+          }
+          if (!dataPayload) {
+            continue;
+          }
+          if (dataPayload === '[DONE]') {
+            done = true;
+            break;
+          }
+          let payloadData: { type?: string; delta?: string; message?: string };
+          try {
+            payloadData = JSON.parse(dataPayload);
+          } catch {
+            continue;
+          }
+          if (payloadData.type === 'delta' && payloadData.delta) {
+            currentText += payloadData.delta;
+            updateMessage(id, { content: currentText });
+          }
+          if (payloadData.type === 'error') {
+            throw new Error(payloadData.message || 'Streaming error.');
+          }
+          if (payloadData.type === 'done') {
+            done = true;
+            break;
+          }
         }
-      }, TYPE_SPEED_MS);
-      typingIntervals.current.add(intervalId);
-    });
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        aborted = true;
+      } else {
+        const message = error?.message || 'Unable to stream response.';
+        updateMessage(id, { content: currentText || `Error: ${message}` });
+      }
+    } finally {
+      updateMessage(id, { status: 'done' });
+      if (activeAbort.current === controller) {
+        activeAbort.current = null;
+      }
+    }
+
+    return { content: currentText, aborted };
   };
 
   const setMode = (mode: InteractionMode) => {
     if (mode !== 'ROUND_TABLE') {
-      orchestrationToken.current.cancelled = true;
+      cancelActiveStream();
     }
     setState((prev) => ({
       ...prev,
       mode,
-      roundTable: mode === 'ROUND_TABLE' ? prev.roundTable : { ...prev.roundTable, isOrchestrating: false }
+      roundTable:
+        mode === 'ROUND_TABLE'
+          ? prev.roundTable
+          : { ...prev.roundTable, isOrchestrating: false }
     }));
   };
 
   const setAnchor = (id: string, text: string) => {
+    cancelActiveStream();
     const anchor = buildAnchor(text, id);
     setState((prev) => ({ ...prev, anchor, mode: 'MENTOR' }));
-    if (lastAnchorId.current === anchor.id) {
-      return;
-    }
-    lastAnchorId.current = anchor.id;
-    const greeting = 'Want to unpack this passage together? What stands out to you?';
-    void typeMessage('mentor', greeting, 'MENTOR', anchor.id);
+  };
+
+  const setViewportText = (text: string) => {
+    const normalized = normalizeText(text);
+    const capped = limitWords(normalized, 1000);
+    setState((prev) =>
+      prev.viewportText === capped ? prev : { ...prev, viewportText: capped }
+    );
   };
 
   const sendMessage = (text: string) => {
-    if (!text.trim()) {
+    const trimmed = normalizeText(text);
+    if (!trimmed) {
       return;
     }
-    const anchorId = state.anchor?.id;
-    appendMessage({
+
+    const anchorId = stateRef.current.anchor?.id;
+    const mode = stateRef.current.mode === 'IDLE' ? 'MENTOR' : stateRef.current.mode;
+
+    const userMessage: Message = {
       id: createId(),
       role: 'user',
       persona: 'mentor',
-      content: text.trim(),
+      content: trimmed,
       status: 'done',
       anchorId,
-      mode: state.mode === 'IDLE' ? 'MENTOR' : state.mode,
+      mode,
       timestamp: new Date().toISOString()
-    });
+    };
+    appendMessage(userMessage);
 
-    if (state.mode === 'ROUND_TABLE') {
-      if (state.roundTable.isOrchestrating) {
-        orchestrationToken.current.cancelled = true;
-      }
+    if (mode === 'ROUND_TABLE') {
+      cancelActiveStream();
       setState((prev) => ({
         ...prev,
+        mode,
         roundTable: { ...prev.roundTable, awaitingUser: false, turnCount: 0 }
       }));
-      void runRoundTableTurns(text.trim());
+      const messagesOverride = [...stateRef.current.messages, userMessage];
+      void runRoundTableTurns(messagesOverride);
       return;
     }
 
-    const response = generateMentorResponse(text, state.anchor);
-    void typeMessage('mentor', response, 'MENTOR', anchorId);
+    setState((prev) => ({ ...prev, mode }));
+    const history = buildHistory([...stateRef.current.messages, userMessage], 'MENTOR');
+    const payload = {
+      messages: history,
+      anchor: stateRef.current.anchor,
+      viewportText: stateRef.current.viewportText
+    };
+    void streamFromApi({
+      endpoint: '/api/mentor',
+      payload,
+      persona: 'mentor',
+      mode: 'MENTOR',
+      anchorId
+    });
   };
 
   const inviteRoundTable = async () => {
+    if (!stateRef.current.anchor) {
+      return;
+    }
+    cancelActiveStream();
     setState((prev) => ({
       ...prev,
       mode: 'ROUND_TABLE',
@@ -284,45 +364,89 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
         nextPersonaIndex: 0
       }
     }));
-    const intro =
-      "Let's bring in the panel. I'll keep time and make sure each perspective speaks.";
-    const anchorId = stateRef.current.anchor?.id;
-    await typeMessage('mentor', intro, 'ROUND_TABLE', anchorId);
+
+    const history = buildHistory(stateRef.current.messages, undefined, true);
+    const introMessages = [
+      ...history,
+      {
+        role: 'user',
+        content:
+          'Introduce the round-table panel (Skeptic, Historian, Pragmatist) and summarize the user question in 1-2 sentences.'
+      }
+    ];
+
+    await streamFromApi({
+      endpoint: '/api/mentor',
+      payload: {
+        messages: introMessages,
+        anchor: stateRef.current.anchor,
+        viewportText: stateRef.current.viewportText
+      },
+      persona: 'mentor',
+      mode: 'ROUND_TABLE',
+      anchorId: stateRef.current.anchor?.id
+    });
+
     await runRoundTableTurns();
   };
 
-  const runRoundTableTurns = async (promptOverride?: string) => {
-    const currentState = stateRef.current;
-    if (!currentState.anchor) {
+  const runRoundTableTurns = async (messagesOverride?: Message[]) => {
+    if (!stateRef.current.anchor) {
       return;
     }
-    orchestrationToken.current.cancelled = false;
+
     setState((prev) => ({
       ...prev,
-      roundTable: { ...prev.roundTable, isOrchestrating: true }
+      roundTable: {
+        ...prev.roundTable,
+        isOrchestrating: true,
+        awaitingUser: false,
+        turnCount: 0
+      }
     }));
 
+    const turnsToRun = Math.min(
+      stateRef.current.roundTable.maxTurnsBeforePause,
+      PERSONA_ORDER.length
+    );
+
+    let localNextPersonaIndex = stateRef.current.roundTable.nextPersonaIndex;
     let localTurnCount = 0;
-    let localNextPersonaIndex = currentState.roundTable.nextPersonaIndex;
-    const availableTurns = currentState.roundTable.maxTurnsBeforePause;
-    const turnsToRun = Math.min(3, Math.max(availableTurns, 0));
-
-    setState((prev) => ({
-      ...prev,
-      roundTable: { ...prev.roundTable, turnCount: 0 }
-    }));
+    let rollingMessages = [...(messagesOverride ?? stateRef.current.messages)];
 
     for (let i = 0; i < turnsToRun; i += 1) {
-      if (orchestrationToken.current.cancelled) {
+      const persona = PERSONA_ORDER[localNextPersonaIndex % PERSONA_ORDER.length];
+      const history = buildHistory(rollingMessages, undefined, true);
+      const payload = {
+        messages: history,
+        anchor: stateRef.current.anchor,
+        viewportText: stateRef.current.viewportText,
+        persona
+      };
+
+      const result = await streamFromApi({
+        endpoint: '/api/roundtable',
+        payload,
+        persona,
+        mode: 'ROUND_TABLE',
+        anchorId: stateRef.current.anchor?.id
+      });
+
+      if (result.aborted) {
         break;
       }
-      const persona = PERSONA_ORDER[localNextPersonaIndex % PERSONA_ORDER.length];
-      const prompt =
-        promptOverride ??
-        currentState.messages.filter((message) => message.role === 'user').slice(-1)[0]?.content ??
-        '';
-      const reply = generatePersonaReply(persona, prompt, currentState.anchor);
-      await typeMessage(persona, reply, 'ROUND_TABLE', currentState.anchor.id, orchestrationToken.current);
+
+      const responseMessage: Message = {
+        id: createId(),
+        role: 'ai',
+        persona,
+        content: result.content,
+        status: 'done',
+        anchorId: stateRef.current.anchor?.id,
+        mode: 'ROUND_TABLE',
+        timestamp: new Date().toISOString()
+      };
+      rollingMessages = [...rollingMessages, responseMessage];
 
       localTurnCount += 1;
       localNextPersonaIndex += 1;
@@ -330,8 +454,8 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
         ...prev,
         roundTable: {
           ...prev.roundTable,
-          turnCount: prev.roundTable.turnCount + 1,
-          nextPersonaIndex: prev.roundTable.nextPersonaIndex + 1
+          turnCount: localTurnCount,
+          nextPersonaIndex: localNextPersonaIndex
         }
       }));
     }
@@ -346,7 +470,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     }));
   };
 
-  const continueRoundTable = (promptOverride?: string) => {
+  const continueRoundTable = () => {
     if (state.roundTable.isOrchestrating) {
       return;
     }
@@ -354,11 +478,11 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
       ...prev,
       roundTable: { ...prev.roundTable, awaitingUser: false, turnCount: 0 }
     }));
-    void runRoundTableTurns(promptOverride);
+    void runRoundTableTurns();
   };
 
   const raiseHand = () => {
-    orchestrationToken.current.cancelled = true;
+    cancelActiveStream();
     setState((prev) => ({
       ...prev,
       roundTable: { ...prev.roundTable, isOrchestrating: false, awaitingUser: true }
@@ -366,7 +490,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
   };
 
   const clearConversation = () => {
-    clearTypingIntervals();
+    cancelActiveStream();
     setState((prev) => ({
       ...prev,
       messages: [],
@@ -377,6 +501,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
   const actions: InteractionActions = {
     setMode,
     setAnchor,
+    setViewportText,
     sendMessage,
     inviteRoundTable,
     continueRoundTable,
