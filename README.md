@@ -51,6 +51,41 @@ npm run dev -- --host
 ```
 Then open `http://<your-local-ip>:5173` on another device.
 
+## HTTPS for voice on other devices
+Microphone access requires HTTPS (or `localhost`). For testing on your LAN, generate a trusted local cert and run Vite + the API over HTTPS.
+
+High-level steps:
+1. Create a local cert (e.g. with mkcert) for your machine IP/hostname.
+2. Trust the mkcert root CA on each device.
+3. Set env vars for HTTPS + host and start the servers.
+
+Example env (add to `.env`):
+```
+VITE_HOST=0.0.0.0
+HOST=0.0.0.0
+HTTPS_KEY=</absolute/path/to/key.pem>
+HTTPS_CERT=</absolute/path/to/cert.pem>
+HTTPS_CA=</absolute/path/to/rootCA.pem> # optional
+```
+
+Run:
+```bash
+npm run dev:server
+npm run dev -- --host
+```
+
+Then open `https://<your-local-ip>:5173` on other devices.
+
+Production-ish LAN flow:
+```
+VITE_API_BASE=https://<your-local-ip>:8787
+```
+```bash
+npm run build
+npm run preview -- --host
+```
+Keep `npm run dev:server` running so `/api` calls reach the API server.
+
 ## Project structure
 ```
 server/
@@ -87,6 +122,7 @@ Optional:
 - `OPENAI_VOICE_MENTOR`, `OPENAI_VOICE_SKEPTIC`, `OPENAI_VOICE_HISTORIAN`, `OPENAI_VOICE_PRAGMATIST`
 - `OPENAI_TRANSCRIBE_MODEL`
 - `PORT`, `CORS_ORIGIN`
+- `VITE_HOST`, `HOST`, `HTTPS_KEY`, `HTTPS_CERT`, `HTTPS_CA`
 
 ## Scripts
 - `npm run dev` - start dev server

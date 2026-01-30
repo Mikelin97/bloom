@@ -4,6 +4,7 @@ import cors from 'cors';
 import multer from 'multer';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import OpenAI from 'openai';
@@ -11,6 +12,7 @@ import { MENTOR_SYSTEM_PROMPT, PERSONA_PROMPTS } from './prompts.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 8787;
+const host = process.env.HOST;
 const corsOrigin = process.env.CORS_ORIGIN || '*';
 const chatModel = process.env.OPENAI_MODEL || 'gpt-4.1';
 const ttsModel = process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts';
@@ -47,6 +49,17 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
+
+function getHttpsOptions() {
+  const keyPath = process.env.HTTPS_KEY;
+  const certPath = process.env.HTTPS_CERT;
+  if (!keyPath || !certPath) return null;
+  const key = fs.readFileSync(keyPath);
+  const cert = fs.readFileSync(certPath);
+  const caPath = process.env.HTTPS_CA;
+  const ca = caPath ? fs.readFileSync(caPath) : undefined;
+  return ca ? { key, cert, ca } : { key, cert };
+}
 
 function sendEvent(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -232,6 +245,25 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Reimagine Reading API running on http://localhost:${port}`);
-});
+const httpsOptions = getHttpsOptions();
+const protocol = httpsOptions ? 'https' : 'http';
+const displayHost = host || 'localhost';
+const listenHost = host || undefined;
+
+if (httpsOptions) {
+  https.createServer(httpsOptions, app).listen(port, listenHost, () => {
+    console.log(
+      `Reimagine Reading API running on ${protocol}://${displayHost}:${port} (listening on ${
+        listenHost || '0.0.0.0'
+      })`
+    );
+  });
+} else {
+  app.listen(port, listenHost, () => {
+    console.log(
+      `Reimagine Reading API running on ${protocol}://${displayHost}:${port} (listening on ${
+        listenHost || '0.0.0.0'
+      })`
+    );
+  });
+}
