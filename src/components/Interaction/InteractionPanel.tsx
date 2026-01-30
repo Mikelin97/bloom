@@ -1,5 +1,7 @@
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { InteractionMode, Message, Persona, useInteraction } from '../../context/InteractionContext';
+
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 const PERSONA_STYLES: Record<
   Persona,
@@ -107,10 +109,29 @@ function ModeToggle({
 export default function InteractionPanel() {
   const { state, actions } = useInteraction();
   const [draft, setDraft] = useState('');
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const spokenIdsRef = useRef<Set<string>>(new Set());
+  const speechQueueRef = useRef<Array<{ text: string; persona: Persona }>>([]);
+  const isSpeakingRef = useRef(false);
+  const ttsAbortRef = useRef<AbortController | null>(null);
 
   const panelOpen = state.mode !== 'IDLE';
   const anchor = state.anchor;
+  const supportsRecording = useMemo(() => {
+    return (
+      typeof MediaRecorder !== 'undefined' &&
+      typeof navigator !== 'undefined' &&
+      !!navigator.mediaDevices?.getUserMedia
+    );
+  }, []);
 
   useEffect(() => {
     if (!panelOpen) return;
@@ -125,6 +146,19 @@ export default function InteractionPanel() {
     }
   }, [panelOpen]);
 
+  useEffect(() => {
+    if (!panelOpen) {
+      stopSpeech();
+    }
+  }, [panelOpen]);
+
+  useEffect(() => {
+    if (!voiceEnabled) {
+      stopSpeech();
+    }
+    setVoiceError(null);
+  }, [voiceEnabled]);
+
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     const text = draft.trim();
@@ -135,6 +169,175 @@ export default function InteractionPanel() {
     actions.sendMessage(text);
     setDraft('');
   };
+
+  const stopSpeech = () => {
+    if (ttsAbortRef.current) {
+      ttsAbortRef.current.abort();
+      ttsAbortRef.current = null;
+    }
+    speechQueueRef.current = [];
+    isSpeakingRef.current = false;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+  };
+
+  const playAudio = (url: string) =>
+    new Promise<void>((resolve, reject) => {
+      if (!audioRef.current) {
+        audioRef.current = new Audio();
+      }
+      const audio = audioRef.current;
+      audio.src = url;
+      audio.onended = () => resolve();
+      audio.onerror = () => reject(new Error('Audio playback failed.'));
+      audio.play().catch(reject);
+    });
+
+  const speakText = async (text: string, persona: Persona) => {
+    if (!voiceEnabled) return;
+    const controller = new AbortController();
+    ttsAbortRef.current = controller;
+    const response = await fetch(`${API_BASE}/api/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, persona }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`Voice request failed with status ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    try {
+      await playAudio(url);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const playNextSpeech = async () => {
+    if (isSpeakingRef.current || !voiceEnabled) {
+      return;
+    }
+    const next = speechQueueRef.current.shift();
+    if (!next) {
+      return;
+    }
+    isSpeakingRef.current = true;
+    try {
+      await speakText(next.text, next.persona);
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') {
+        setVoiceError(error?.message || 'Voice playback failed.');
+      }
+    } finally {
+      isSpeakingRef.current = false;
+      if (speechQueueRef.current.length > 0) {
+        void playNextSpeech();
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!voiceEnabled) return;
+    const newMessages = state.messages.filter(
+      (message) =>
+        message.role === 'ai' &&
+        message.status === 'done' &&
+        !spokenIdsRef.current.has(message.id)
+    );
+    if (!newMessages.length) return;
+    newMessages.forEach((message) => {
+      spokenIdsRef.current.add(message.id);
+      if (message.content.trim()) {
+        speechQueueRef.current.push({ text: message.content, persona: message.persona });
+      }
+    });
+    void playNextSpeech();
+  }, [state.messages, voiceEnabled]);
+
+  const beginRecording = async () => {
+    if (!supportsRecording || isRecording || isTranscribing) return;
+    setVoiceError(null);
+    stopSpeech();
+    if (state.mode === 'ROUND_TABLE' && state.roundTable.isOrchestrating) {
+      actions.raiseHand();
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const chunks = audioChunksRef.current;
+        audioChunksRef.current = [];
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        if (!blob.size) {
+          setIsTranscribing(false);
+          return;
+        }
+        setIsTranscribing(true);
+        try {
+          const formData = new FormData();
+          formData.append('audio', blob, 'speech.webm');
+          const response = await fetch(`${API_BASE}/api/transcribe`, {
+            method: 'POST',
+            body: formData
+          });
+          if (!response.ok) {
+            throw new Error(`Transcription failed with status ${response.status}`);
+          }
+          const data = (await response.json()) as { text?: string };
+          const transcript = data?.text?.trim();
+          if (transcript) {
+            actions.sendMessage(transcript);
+          } else {
+            setVoiceError('No speech detected.');
+          }
+        } catch (error: any) {
+          setVoiceError(error?.message || 'Transcription failed.');
+        } finally {
+          setIsTranscribing(false);
+        }
+      };
+
+      recorder.start();
+      setIsRecording(true);
+    } catch (error: any) {
+      setVoiceError(error?.message || 'Microphone permission denied.');
+      setIsRecording(false);
+    }
+  };
+
+  const endRecording = () => {
+    if (!mediaRecorderRef.current) {
+      return;
+    }
+    if (mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  };
+
+  useEffect(() => {
+    if (!panelOpen && isRecording) {
+      endRecording();
+    }
+  }, [panelOpen, isRecording]);
 
   const handleRoundTableClick = () => {
     if (!anchor) {
@@ -178,6 +381,17 @@ export default function InteractionPanel() {
             <p className="text-lg font-semibold text-[var(--text)]">{activeModeLabel}</p>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setVoiceEnabled((prev) => !prev)}
+              className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                voiceEnabled
+                  ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-600'
+                  : 'border-[var(--panel-border)] text-[var(--text-muted)]'
+              }`}
+            >
+              Voice {voiceEnabled ? 'On' : 'Off'}
+            </button>
             <ModeToggle
               label="Mentor"
               active={state.mode === 'MENTOR'}
@@ -262,6 +476,12 @@ export default function InteractionPanel() {
               The panel is paused - add your take to continue.
             </div>
           )}
+
+          {voiceError && (
+            <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-700">
+              {voiceError}
+            </div>
+          )}
         </div>
 
         <form
@@ -308,7 +528,10 @@ export default function InteractionPanel() {
                     </button>
                     <button
                       type="button"
-                      onClick={actions.raiseHand}
+                      onClick={() => {
+                        stopSpeech();
+                        actions.raiseHand();
+                      }}
                       className="rounded-full border border-[var(--panel-border)] px-3 py-1 text-[var(--text)] transition"
                     >
                       Raise hand
@@ -316,13 +539,34 @@ export default function InteractionPanel() {
                   </>
                 )}
               </div>
-              <button
-                type="submit"
-                className="rounded-full border border-[var(--text)] bg-[var(--text)] px-4 py-1 font-semibold text-[var(--bg)] transition hover:-translate-y-0.5"
-              >
-                Send
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!supportsRecording || isTranscribing}
+                  onPointerDown={beginRecording}
+                  onPointerUp={endRecording}
+                  onPointerLeave={endRecording}
+                  className={`rounded-full border px-3 py-1 font-semibold transition ${
+                    !supportsRecording || isTranscribing
+                      ? 'border-[var(--panel-border)] text-[var(--text-muted)]'
+                      : isRecording
+                        ? 'border-rose-500/60 bg-rose-500/10 text-rose-600 animate-pulse'
+                        : 'border-[var(--panel-border)] text-[var(--text)]'
+                  }`}
+                >
+                  {isTranscribing ? 'Transcribing...' : isRecording ? 'Listening...' : 'Hold to talk'}
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-full border border-[var(--text)] bg-[var(--text)] px-4 py-1 font-semibold text-[var(--bg)] transition hover:-translate-y-0.5"
+                >
+                  Send
+                </button>
+              </div>
             </div>
+            <p className="mt-2 text-[10px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+              Audio is AI-generated.
+            </p>
           </div>
         </form>
       </section>

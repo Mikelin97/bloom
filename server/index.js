@@ -1,13 +1,40 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import multer from 'multer';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import OpenAI from 'openai';
 import { MENTOR_SYSTEM_PROMPT, PERSONA_PROMPTS } from './prompts.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 8787;
 const corsOrigin = process.env.CORS_ORIGIN || '*';
-const model = process.env.OPENAI_MODEL || 'gpt-4.1';
+const chatModel = process.env.OPENAI_MODEL || 'gpt-4.1';
+const ttsModel = process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts';
+const ttsFormat = process.env.OPENAI_TTS_FORMAT || 'mp3';
+const ttsSpeed = Number(process.env.OPENAI_TTS_SPEED || '1') || 1;
+const transcribeModel = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
+
+const VOICE_MAP = {
+  mentor: process.env.OPENAI_VOICE_MENTOR || 'sage',
+  skeptic: process.env.OPENAI_VOICE_SKEPTIC || 'onyx',
+  historian: process.env.OPENAI_VOICE_HISTORIAN || 'ballad',
+  pragmatist: process.env.OPENAI_VOICE_PRAGMATIST || 'nova'
+};
+
+const TTS_INSTRUCTIONS = {
+  mentor:
+    'Warm, academic mentor voice. Calm cadence, encouraging tone. End with a gentle inquisitive lift.',
+  skeptic:
+    'Crisp, analytical tone. Slightly skeptical, inquisitive, and direct. Keep it concise.',
+  historian:
+    'Measured, reflective tone with a scholarly cadence. Evoke historical context without dramatizing.',
+  pragmatist:
+    'Clear, practical tone. Confident and actionable, with a slight upbeat energy.'
+};
 
 app.use(
   cors({
@@ -15,6 +42,7 @@ app.use(
   })
 );
 app.use(express.json({ limit: '1mb' }));
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -65,7 +93,7 @@ async function streamResponse(res, { input, temperature }) {
   });
 
   const stream = await client.responses.create({
-    model,
+    model: chatModel,
     input,
     temperature,
     stream: true
@@ -95,6 +123,20 @@ function ensureApiKey(res) {
     return false;
   }
   return true;
+}
+
+function getContentType(format) {
+  if (format === 'wav') return 'audio/wav';
+  if (format === 'aac') return 'audio/aac';
+  if (format === 'flac') return 'audio/flac';
+  if (format === 'opus') return 'audio/opus';
+  return 'audio/mpeg';
+}
+
+async function writeTempFile(buffer, filename) {
+  const tempPath = path.join(os.tmpdir(), filename);
+  await fsp.writeFile(tempPath, buffer);
+  return tempPath;
 }
 
 app.post('/api/mentor', async (req, res) => {
@@ -127,6 +169,66 @@ app.post('/api/roundtable', async (req, res) => {
     await streamResponse(res, { input, temperature: 0.7 });
   } catch (error) {
     res.status(500).json({ error: error?.message || 'Server error.' });
+  }
+});
+
+app.post('/api/tts', async (req, res) => {
+  if (!ensureApiKey(res)) return;
+  try {
+    const { text, persona, voice } = req.body ?? {};
+    const input = typeof text === 'string' ? text.trim() : '';
+    if (!input) {
+      res.status(400).json({ error: 'Missing text.' });
+      return;
+    }
+
+    const selectedVoice = voice || VOICE_MAP[persona] || VOICE_MAP.mentor;
+    const instructions = TTS_INSTRUCTIONS[persona] || TTS_INSTRUCTIONS.mentor;
+    const clipped = input.slice(0, 4000);
+
+    const speech = await client.audio.speech.create({
+      model: ttsModel,
+      voice: selectedVoice,
+      input: clipped,
+      response_format: ttsFormat,
+      speed: ttsSpeed,
+      instructions
+    });
+
+    const buffer = Buffer.from(await speech.arrayBuffer());
+    res.setHeader('Content-Type', getContentType(ttsFormat));
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: error?.message || 'TTS failed.' });
+  }
+});
+
+app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
+  if (!ensureApiKey(res)) return;
+  let tempPath = '';
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: 'Missing audio file.' });
+      return;
+    }
+    const fileName = req.file.originalname || `audio-${Date.now()}.webm`;
+    tempPath = await writeTempFile(req.file.buffer, fileName);
+    const stream = fs.createReadStream(tempPath);
+
+    const transcription = await client.audio.transcriptions.create({
+      model: transcribeModel,
+      file: stream,
+      response_format: 'json'
+    });
+
+    res.json({ text: transcription?.text || '' });
+  } catch (error) {
+    res.status(500).json({ error: error?.message || 'Transcription failed.' });
+  } finally {
+    if (tempPath) {
+      await fsp.unlink(tempPath).catch(() => undefined);
+    }
   }
 });
 
