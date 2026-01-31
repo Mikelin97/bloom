@@ -4,6 +4,13 @@ export type InteractionMode = 'IDLE' | 'MENTOR' | 'ROUND_TABLE';
 export type Persona = 'mentor' | 'skeptic' | 'historian' | 'pragmatist';
 export type MessageRole = 'user' | 'ai';
 
+export const PERSONA_DISPLAY: Record<Persona, { name: string; role: string }> = {
+  mentor: { name: 'Catherine', role: 'Mentor' },
+  skeptic: { name: 'Henry', role: 'Skeptic' },
+  historian: { name: 'Amelia', role: 'Historian' },
+  pragmatist: { name: 'Marcus', role: 'Pragmatist' }
+};
+
 export interface AnchorContext {
   id: string;
   text: string;
@@ -38,6 +45,7 @@ export interface InteractionState {
   anchor: AnchorContext | null;
   messages: Message[];
   viewportText: string;
+  voiceMode: boolean;
   roundTable: RoundTableState;
 }
 
@@ -49,6 +57,7 @@ interface InteractionActions {
   inviteRoundTable: () => void;
   continueRoundTable: () => void;
   raiseHand: () => void;
+  setVoiceMode: (enabled: boolean) => void;
   clearConversation: () => void;
 }
 
@@ -111,7 +120,7 @@ function buildHistory(
       role: message.role === 'user' ? 'user' : 'assistant',
       content:
         labelPersonas && message.role === 'ai'
-          ? `${message.persona.toUpperCase()}: ${message.content}`
+          ? `${PERSONA_DISPLAY[message.persona].name.toUpperCase()}: ${message.content}`
           : message.content
     }))
     .filter((message) => message.content.length > 0);
@@ -123,6 +132,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     anchor: null,
     messages: [],
     viewportText: '',
+    voiceMode: false,
     roundTable: {
       sessionId: null,
       turnCount: 0,
@@ -370,8 +380,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
       ...history,
       {
         role: 'user',
-        content:
-          'Introduce the round-table panel (Skeptic, Historian, Pragmatist) and summarize the user question in 1-2 sentences.'
+        content: `Introduce the round-table panel (${PERSONA_DISPLAY.skeptic.name}, ${PERSONA_DISPLAY.historian.name}, ${PERSONA_DISPLAY.pragmatist.name}) and summarize the user question in 1-2 sentences.`
       }
     ];
 
@@ -489,6 +498,10 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     }));
   };
 
+  const setVoiceMode = (enabled: boolean) => {
+    setState((prev) => ({ ...prev, voiceMode: enabled }));
+  };
+
   const clearConversation = () => {
     cancelActiveStream();
     setState((prev) => ({
@@ -506,6 +519,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     inviteRoundTable,
     continueRoundTable,
     raiseHand,
+    setVoiceMode,
     clearConversation
   };
 

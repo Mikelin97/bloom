@@ -1,5 +1,11 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { InteractionMode, Message, Persona, useInteraction } from '../../context/InteractionContext';
+import {
+  InteractionMode,
+  Message,
+  Persona,
+  PERSONA_DISPLAY,
+  useInteraction
+} from '../../context/InteractionContext';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -8,34 +14,61 @@ const PERSONA_STYLES: Record<
   { label: string; accent: string; bubble: string; ring: string; avatar: string }
 > = {
   mentor: {
-    label: 'Mentor',
+    label: PERSONA_DISPLAY.mentor.name,
     accent: 'text-emerald-500',
     bubble: 'bg-emerald-500/10 border-emerald-500/30',
     ring: 'ring-emerald-500/30',
-    avatar: 'M'
+    avatar: PERSONA_DISPLAY.mentor.name.slice(0, 1)
   },
   skeptic: {
-    label: 'Skeptic',
+    label: PERSONA_DISPLAY.skeptic.name,
     accent: 'text-rose-500',
     bubble: 'bg-rose-500/10 border-rose-500/30',
     ring: 'ring-rose-500/30',
-    avatar: 'S'
+    avatar: PERSONA_DISPLAY.skeptic.name.slice(0, 1)
   },
   historian: {
-    label: 'Historian',
+    label: PERSONA_DISPLAY.historian.name,
     accent: 'text-amber-600',
     bubble: 'bg-amber-500/10 border-amber-500/30',
     ring: 'ring-amber-500/30',
-    avatar: 'H'
+    avatar: PERSONA_DISPLAY.historian.name.slice(0, 1)
   },
   pragmatist: {
-    label: 'Pragmatist',
+    label: PERSONA_DISPLAY.pragmatist.name,
     accent: 'text-sky-500',
     bubble: 'bg-sky-500/10 border-sky-500/30',
     ring: 'ring-sky-500/30',
-    avatar: 'P'
+    avatar: PERSONA_DISPLAY.pragmatist.name.slice(0, 1)
   }
 };
+
+const AUDIO_MIME_CANDIDATES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/mp4',
+  'audio/m4a',
+  'audio/aac',
+  'audio/wav'
+];
+
+function pickAudioMimeType() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
+    return '';
+  }
+  return AUDIO_MIME_CANDIDATES.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function getAudioExtension(mimeType: string) {
+  const normalized = mimeType.split(';')[0].trim();
+  if (normalized.includes('webm')) return 'webm';
+  if (normalized.includes('ogg')) return 'ogg';
+  if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'mp3';
+  if (normalized.includes('wav')) return 'wav';
+  if (normalized.includes('aac')) return 'aac';
+  if (normalized.includes('mp4') || normalized.includes('m4a')) return 'm4a';
+  return 'webm';
+}
 
 function TypingDots() {
   return (
@@ -122,12 +155,31 @@ export default function InteractionPanel() {
   const speechQueueRef = useRef<Array<{ text: string; persona: Persona }>>([]);
   const isSpeakingRef = useRef(false);
   const ttsAbortRef = useRef<AbortController | null>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const inputItemIdRef = useRef<string | null>(null);
+  const outputItemIdRef = useRef<string | null>(null);
+  const voiceMode = state.voiceMode;
+  const [voiceStatus, setVoiceStatus] = useState<'idle' | 'connecting' | 'listening' | 'responding'>(
+    'idle'
+  );
+  const [voiceInputTranscript, setVoiceInputTranscript] = useState('');
+  const [voiceOutputTranscript, setVoiceOutputTranscript] = useState('');
 
-  const panelOpen = state.mode !== 'IDLE';
+  const panelOpen = state.mode !== 'IDLE' && !voiceMode;
   const anchor = state.anchor;
   const supportsRecording = useMemo(() => {
     return (
       typeof MediaRecorder !== 'undefined' &&
+      typeof navigator !== 'undefined' &&
+      !!navigator.mediaDevices?.getUserMedia
+    );
+  }, []);
+  const supportsVoiceMode = useMemo(() => {
+    return (
+      typeof RTCPeerConnection !== 'undefined' &&
       typeof navigator !== 'undefined' &&
       !!navigator.mediaDevices?.getUserMedia
     );
@@ -147,16 +199,22 @@ export default function InteractionPanel() {
   }, [panelOpen]);
 
   useEffect(() => {
-    if (!panelOpen) {
+    if (!panelOpen && !voiceMode) {
       stopSpeech();
     }
-  }, [panelOpen]);
+  }, [panelOpen, voiceMode]);
 
   useEffect(() => {
     if (!voiceEnabled) {
       stopSpeech();
     }
     setVoiceError(null);
+  }, [voiceEnabled]);
+
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = !voiceEnabled;
+    }
   }, [voiceEnabled]);
 
   const handleSubmit = (event: FormEvent) => {
@@ -181,6 +239,194 @@ export default function InteractionPanel() {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
+  };
+
+  const ensureRemoteAudio = () => {
+    if (!remoteAudioRef.current) {
+      const audio = new Audio();
+      audio.autoplay = true;
+      audio.muted = !voiceEnabled;
+      remoteAudioRef.current = audio;
+    }
+    return remoteAudioRef.current;
+  };
+
+  const resetVoiceTranscripts = () => {
+    inputItemIdRef.current = null;
+    outputItemIdRef.current = null;
+    setVoiceInputTranscript('');
+    setVoiceOutputTranscript('');
+  };
+
+  const cleanupRealtime = () => {
+    dataChannelRef.current?.close();
+    dataChannelRef.current = null;
+    peerRef.current?.close();
+    peerRef.current = null;
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+    }
+    setVoiceStatus('idle');
+  };
+
+  const handleRealtimeEvent = (event: MessageEvent) => {
+    let payload: any;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    const { type } = payload || {};
+    if (!type) return;
+
+    if (type === 'input_audio_buffer.speech_started') {
+      setVoiceStatus('listening');
+      return;
+    }
+    if (type === 'input_audio_buffer.speech_stopped') {
+      setVoiceStatus('responding');
+      return;
+    }
+    if (type === 'conversation.item.input_audio_transcription.delta') {
+      const itemId = payload.item_id || 'input';
+      if (inputItemIdRef.current !== itemId) {
+        inputItemIdRef.current = itemId;
+        setVoiceInputTranscript('');
+      }
+      if (payload.delta) {
+        setVoiceInputTranscript((prev) => prev + payload.delta);
+      }
+      return;
+    }
+    if (type === 'conversation.item.input_audio_transcription.completed') {
+      const itemId = payload.item_id || 'input';
+      inputItemIdRef.current = itemId;
+      if (payload.transcript) {
+        setVoiceInputTranscript(payload.transcript);
+      }
+      return;
+    }
+    if (type === 'response.output_text.delta') {
+      const outputId = payload.response_id || payload.item_id || 'output';
+      if (outputItemIdRef.current !== outputId) {
+        outputItemIdRef.current = outputId;
+        setVoiceOutputTranscript('');
+      }
+      if (payload.delta) {
+        setVoiceOutputTranscript((prev) => prev + payload.delta);
+      }
+      setVoiceStatus('responding');
+      return;
+    }
+    if (type === 'response.output_text.done') {
+      if (payload.text) {
+        setVoiceOutputTranscript(payload.text);
+      }
+      setVoiceStatus('listening');
+      return;
+    }
+    if (type === 'response.output_audio.done') {
+      setVoiceStatus('listening');
+      return;
+    }
+    if (type === 'error') {
+      setVoiceError(payload?.message || 'Voice mode error.');
+    }
+  };
+
+  const connectRealtime = async () => {
+    if (peerRef.current) return;
+    setVoiceStatus('connecting');
+    setVoiceError(null);
+    resetVoiceTranscripts();
+    stopSpeech();
+    if (isRecording) {
+      endRecording();
+    }
+
+    try {
+      const tokenResponse = await fetch(`${API_BASE}/api/realtime-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          anchor: state.anchor,
+          viewportText: state.viewportText
+        })
+      });
+      if (!tokenResponse.ok) {
+        throw new Error(`Realtime token failed with status ${tokenResponse.status}`);
+      }
+      const tokenData = await tokenResponse.json();
+      const clientSecret =
+        tokenData?.value || tokenData?.client_secret?.value || tokenData?.client_secret;
+      if (!clientSecret) {
+        throw new Error('Missing realtime client secret.');
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+
+      const pc = new RTCPeerConnection();
+      peerRef.current = pc;
+
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      pc.ontrack = (event) => {
+        const audio = ensureRemoteAudio();
+        if (event.streams[0]) {
+          audio.srcObject = event.streams[0];
+          audio.play().catch(() => undefined);
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setVoiceError('Voice mode connection lost.');
+          actions.setVoiceMode(false);
+        }
+      };
+
+      const dataChannel = pc.createDataChannel('oai-events');
+      dataChannel.onmessage = handleRealtimeEvent;
+      dataChannel.onopen = () => setVoiceStatus('listening');
+      dataChannel.onerror = () => setVoiceError('Voice mode data channel error.');
+      dataChannel.onclose = () => setVoiceStatus('idle');
+      dataChannelRef.current = dataChannel;
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const sdp = pc.localDescription?.sdp;
+      if (!sdp) {
+        throw new Error('Missing SDP offer.');
+      }
+
+      const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${clientSecret}`,
+          'Content-Type': 'application/sdp'
+        },
+        body: sdp
+      });
+
+      if (!sdpResponse.ok) {
+        throw new Error(`Realtime call failed with status ${sdpResponse.status}`);
+      }
+
+      const answerSdp = await sdpResponse.text();
+      await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+    } catch (error: any) {
+      cleanupRealtime();
+      setVoiceError(error?.message || 'Unable to start voice mode.');
+      actions.setVoiceMode(false);
+    }
+  };
+
+  const disconnectRealtime = () => {
+    cleanupRealtime();
+    resetVoiceTranscripts();
   };
 
   const playAudio = (url: string) =>
@@ -259,7 +505,7 @@ export default function InteractionPanel() {
     void playNextSpeech();
   }, [state.messages, voiceEnabled]);
 
-  const beginRecording = async () => {
+  const startRecording = async () => {
     if (!supportsRecording || isRecording || isTranscribing) return;
     setVoiceError(null);
     stopSpeech();
@@ -269,7 +515,10 @@ export default function InteractionPanel() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const preferredMimeType = pickAudioMimeType();
+      const recorder = preferredMimeType
+        ? new MediaRecorder(stream, { mimeType: preferredMimeType })
+        : new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
       audioChunksRef.current = [];
 
@@ -280,9 +529,11 @@ export default function InteractionPanel() {
       };
 
       recorder.onstop = async () => {
+        setIsRecording(false);
         const chunks = audioChunksRef.current;
         audioChunksRef.current = [];
-        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        const blobType = recorder.mimeType || preferredMimeType || 'audio/webm';
+        const blob = new Blob(chunks, { type: blobType });
         mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
         mediaStreamRef.current = null;
         mediaRecorderRef.current = null;
@@ -293,7 +544,8 @@ export default function InteractionPanel() {
         setIsTranscribing(true);
         try {
           const formData = new FormData();
-          formData.append('audio', blob, 'speech.webm');
+          const extension = getAudioExtension(blob.type || blobType);
+          formData.append('audio', blob, `speech.${extension}`);
           const response = await fetch(`${API_BASE}/api/transcribe`, {
             method: 'POST',
             body: formData
@@ -325,6 +577,7 @@ export default function InteractionPanel() {
 
   const endRecording = () => {
     if (!mediaRecorderRef.current) {
+      setIsRecording(false);
       return;
     }
     if (mediaRecorderRef.current.state !== 'inactive') {
@@ -334,10 +587,26 @@ export default function InteractionPanel() {
   };
 
   useEffect(() => {
-    if (!panelOpen && isRecording) {
+    if (!panelOpen && !voiceMode && isRecording) {
       endRecording();
     }
-  }, [panelOpen, isRecording]);
+  }, [panelOpen, voiceMode, isRecording]);
+
+  useEffect(() => {
+    if (!voiceMode) {
+      disconnectRealtime();
+      return;
+    }
+    if (!supportsVoiceMode) {
+      setVoiceError('Voice mode is not supported in this browser.');
+      actions.setVoiceMode(false);
+      return;
+    }
+    void connectRealtime();
+    return () => {
+      disconnectRealtime();
+    };
+  }, [voiceMode, supportsVoiceMode]);
 
   const handleRoundTableClick = () => {
     if (!anchor) {
@@ -364,7 +633,48 @@ export default function InteractionPanel() {
 
   return (
     <>
-      {!panelOpen && (
+      {voiceMode && (
+        <div className="fixed bottom-24 right-4 z-50 w-[min(92vw,260px)] rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-4 text-[var(--text)] shadow-xl backdrop-blur-lg">
+          <p className="text-[11px] uppercase tracking-[0.3em] text-[var(--text-muted)]">
+            Voice mode
+          </p>
+          <p className="mt-2 text-sm font-semibold">
+            {voiceStatus === 'connecting'
+              ? 'Connecting...'
+              : voiceStatus === 'responding'
+                ? 'Responding...'
+                : voiceStatus === 'listening'
+                  ? 'Listening...'
+                  : 'Idle'}
+          </p>
+          <p className="mt-1 text-xs text-[var(--text-muted)]">
+            {voiceEnabled ? 'TTS playback on.' : 'TTS playback off.'}
+          </p>
+          {voiceInputTranscript && (
+            <p className="mt-3 text-xs text-[var(--text-muted)]">
+              <span className="font-semibold text-[var(--text)]">You:</span> {voiceInputTranscript}
+            </p>
+          )}
+          {voiceOutputTranscript && (
+            <p className="mt-2 text-xs text-[var(--text-muted)]">
+              <span className="font-semibold text-[var(--text)]">Mentor:</span>{' '}
+              {voiceOutputTranscript}
+            </p>
+          )}
+          {voiceError && (
+            <p className="mt-2 text-xs text-rose-600">{voiceError}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => actions.setVoiceMode(false)}
+            className="mt-3 w-full rounded-full border border-[var(--panel-border)] px-3 py-1 text-xs font-semibold text-[var(--text)] transition hover:opacity-80"
+          >
+            Exit voice mode
+          </button>
+        </div>
+      )}
+
+      {!panelOpen && !voiceMode && (
         <button
           type="button"
           onClick={() => actions.setMode('MENTOR')}
@@ -391,6 +701,18 @@ export default function InteractionPanel() {
               }`}
             >
               Voice {voiceEnabled ? 'On' : 'Off'}
+            </button>
+            <button
+              type="button"
+              onClick={() => actions.setVoiceMode(true)}
+              disabled={!supportsVoiceMode}
+              className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                supportsVoiceMode
+                  ? 'border-sky-500/60 bg-sky-500/10 text-sky-600'
+                  : 'border-[var(--panel-border)] text-[var(--text-muted)] opacity-60'
+              }`}
+            >
+              Voice Mode
             </button>
             <ModeToggle
               label="Mentor"
@@ -451,7 +773,7 @@ export default function InteractionPanel() {
                   <div
                     key={persona}
                     className={`flex h-8 w-8 items-center justify-center rounded-full bg-[var(--panel)] text-xs font-semibold ring-1 ${PERSONA_STYLES[persona].ring}`}
-                    title={PERSONA_STYLES[persona].label}
+                    title={`${PERSONA_DISPLAY[persona].name} (${PERSONA_DISPLAY[persona].role})`}
                   >
                     {PERSONA_STYLES[persona].avatar}
                   </div>
@@ -543,7 +865,7 @@ export default function InteractionPanel() {
                 <button
                   type="button"
                   disabled={!supportsRecording || isTranscribing}
-                  onPointerDown={beginRecording}
+                  onPointerDown={startRecording}
                   onPointerUp={endRecording}
                   onPointerLeave={endRecording}
                   className={`rounded-full border px-3 py-1 font-semibold transition ${

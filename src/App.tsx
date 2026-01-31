@@ -42,7 +42,9 @@ export default function App() {
 
   return (
     <ThemeWrapper>
-      <MainContainer panelOpen={interactionState.mode !== 'IDLE'}>
+      <MainContainer
+        panelOpen={interactionState.mode !== 'IDLE' && !interactionState.voiceMode}
+      >
         <RenderedView />
       </MainContainer>
       <InteractionPanel />

@@ -17,8 +17,16 @@ const corsOrigin = process.env.CORS_ORIGIN || '*';
 const chatModel = process.env.OPENAI_MODEL || 'gpt-4.1';
 const ttsModel = process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts';
 const ttsFormat = process.env.OPENAI_TTS_FORMAT || 'mp3';
-const ttsSpeed = Number(process.env.OPENAI_TTS_SPEED || '1') || 1;
+const ttsSpeed = Number(process.env.OPENAI_TTS_SPEED || '1.2') || 1.2;
 const transcribeModel = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
+const realtimeModel =
+  process.env.OPENAI_REALTIME_MODEL ||
+  process.env.OPENAI_VOICE_MODEL ||
+  'gpt-4o-realtime-preview';
+const realtimeVoice =
+  process.env.OPENAI_REALTIME_VOICE || process.env.OPENAI_VOICE_MENTOR || 'sage';
+const realtimeSpeed =
+  Number(process.env.OPENAI_REALTIME_SPEED || process.env.OPENAI_TTS_SPEED || '1.2') || 1.2;
 
 const VOICE_MAP = {
   mentor: process.env.OPENAI_VOICE_MENTOR || 'sage',
@@ -84,6 +92,13 @@ function buildContext(anchor, viewportText) {
     lines.push(`Anchor passage: ${anchor.text}`);
   }
   return lines.join('\n');
+}
+
+function buildRealtimeInstructions(anchor, viewportText) {
+  const context = buildContext(anchor, viewportText);
+  const englishGuide = 'Respond in English.';
+  if (!context) return `${englishGuide}\n${MENTOR_SYSTEM_PROMPT}`;
+  return `${englishGuide}\n${MENTOR_SYSTEM_PROMPT}\n\n${context}`;
 }
 
 function normalizeMessages(messages) {
@@ -182,6 +197,56 @@ app.post('/api/roundtable', async (req, res) => {
     await streamResponse(res, { input, temperature: 0.7 });
   } catch (error) {
     res.status(500).json({ error: error?.message || 'Server error.' });
+  }
+});
+
+app.post('/api/realtime-token', async (req, res) => {
+  if (!ensureApiKey(res)) return;
+  try {
+    const { anchor, viewportText } = req.body ?? {};
+    const instructions = buildRealtimeInstructions(anchor, viewportText);
+    const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        session: {
+          type: 'realtime',
+          model: realtimeModel,
+          instructions,
+          audio: {
+            input: {
+              transcription: {
+                model: transcribeModel,
+                language: 'en'
+              },
+              turn_detection: {
+                type: 'server_vad',
+                create_response: true,
+                interrupt_response: true
+              }
+            },
+            output: {
+              voice: realtimeVoice,
+              speed: realtimeSpeed
+            }
+          }
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      res.status(500).json({ error: `Realtime token failed: ${response.status} ${errorText}` });
+      return;
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error?.message || 'Realtime token failed.' });
   }
 });
 
