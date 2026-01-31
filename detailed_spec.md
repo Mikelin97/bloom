@@ -1,180 +1,187 @@
-# Product Requirements Document: Reimagine Reading
+# **Technical Specification: Reimagine Reading (MVP)**
 
-## 1. Executive Summary
+**Version:** 3.0
 
-**Reimagine Reading** is a client-side, minimalist web application designed to render Markdown text into a distraction-free, highly readable format.
+**Status:** MVP 
 
-* **Core Philosophy:** Performance first, typography-centric, offline-capable.
-* **Target Device Support:** Responsive from iPhone SE (320px) to Large Desktop.
+**Scope:** Core Interaction Mechanics (Conversation Mode & Round-Table Mode)
 
-## 2. Technical Stack & Environment
+**Input Reference:** Lean Canvas v2 (Focus: Deep Reading, Cognitive Load, Social Learning)
 
-* **Build Tool:** **Vite** (Chosen for speed over Create React App).
-* **Framework:** **React** (Functional components + Hooks only).
-* **Styling:** **Tailwind CSS** (v3.0+).
-* **Typography Plugin:** `@tailwindcss/typography` (The `prose` class is essential here).
-* **Markdown Engine:** `react-markdown` (Lightweight, secure parser).
-* **Icons:** **Inline SVGs** (No font-awesome/Material libraries).
-* **State Management:** React Context API + `useReducer`.
-* **Storage:** Browser `localStorage`.
+## **1\. Executive Summary**
 
----
+This document outlines the technical implementation for the MVP of "Reimagine Reading." The goal is to build a "Kindle meets Socrates" reading environment. While the reading interface (parsing, rendering) is necessary, this spec focuses strictly on the differentiation engines:
 
-## 3. Data Model & State
+1. **Conversation Mode (1:1 Mentor):** A context-aware, Socratic AI mentor.  
+2. **Round-Table Mode (1:Many):** A multi-persona discussion room.
 
-Since there is no backend, the "Database" is a strictly typed JSON object residing in `localStorage`.
+## **2\. High-Level Architecture**
 
-### 3.1 Global State (Context)
+### **2.1 Technology Stack Recommendations**
 
-The app tracks a single state object:
+* **Frontend:** **Existing Frontend Stack** (Integrate Conversation/Round-Table overlays into current reader app).  
+* **State Management:** Extend current system to manage AI chat state and reading anchors.  
+* **Backend:** Python (FastAPI) or Node.js (Express). Python is preferred for better integration with LlamaIndex.  
+* **AI Layer:** \* **Orchestration:** LlamaIndex or simple OpenAI API wrappers.  
+  * **Model:** GPT-4.1 (Critical for large context windows to hold full chapters/books).  
+* **Voice Stack:**  
+  * **Input (STT):** OpenAI Whisper.  
+  * **Output (TTS):** OpenAI TTS (HD model).  
+* **Database:** **MongoDB** (Unified store for User data & Chat logs). Use MongoDB Atlas Vector Search for RAG (retrieving book passages), eliminating the need for a separate vector database for the MVP.
 
-```typescript
-interface AppState {
-  viewMode: 'edit' | 'read'; // Toggle between input and reading
-  content: string; // The raw Markdown text
-  settings: {
-    theme: 'light' | 'dark' | 'sepia';
-    fontFamily: 'serif' | 'sans' | 'mono';
-    fontSizeStep: number; // 1-5 scale (mapped to CSS clamp values)
-    scrollPosition: number; // Y-axis pixel coordinate
-  }
+### **2.2 Context Management Strategy**
+
+To minimize "Cognitive Friction," the AI must know exactly what the user is reading.
+
+* **The "Anchor" Concept:** Every paragraph is treated as a discrete, interactable unit with a unique paragraph\_id. Users can initiate a conversation from any paragraph, which automatically serves as the precise context anchor.  
+* **Sliding Window Context:** The prompt sent to the LLM must always include:  
+  1. The Book Title/Author.  
+  2. The Chapter Summary (pre-generated).  
+  3. The specific text currently visible in the viewport (approx. 500-1000 words).
+
+## **3\. Feature Spec: Conversation Mode (1:1 Mentor)**
+
+### **3.1 Overview**
+
+An on-demand slide-out drawer or overlay that remains hidden during reading. To ensure a distraction-free experience, the UI activates only when the user explicitly triggers a mode, expanding from the side to reveal the "Mentor" persona. The key differentiator is **Pedagogical Prompting**: the AI should rarely give a direct answer without a follow-up question to check understanding.
+
+### **3.2 Functional Requirements**
+
+#### **A. Trigger Mechanisms**
+
+1. **Paragraph Interaction:** Clicking a paragraph or its side-marker triggers the "Ask Mentor" context. The system automatically ingests that paragraph as the primary focus.
+
+#### **B. The "Socratic" Logic Flow**
+
+Standard chatbots answer and stop. The Mentor must loop.
+
+1. **User Input (Text or Voice):** "What does the author mean by 'anti-library'?" (Voice input is transcribed via Whisper).  
+2. **System Logic:**  
+   * Retrieve current\_paragraph\_text.  
+   * Inject System\_Prompt\_Mentor.  
+3. **Mentor Response Structure:**  
+   * *Part 1: Validation.* Acknowledge the complexity.  
+   * *Part 2: Explanation.* concise explanation using analogies.  
+   * *Part 3: The Hook.* A specific question asking the user to relate the concept to their own life or previous chapters.
+
+### **3.3 Data Structure (JSON)**
+
+**Message Object:**
+```json
+{
+  "id": "msg_123",
+  "role": "ai", // or "user"
+  "persona_type": "mentor",
+  "content": "The 'anti-library' refers to unread books. Taleb argues they are more valuable than read ones because they remind us of what we don't know. Do you typically buy books to read immediately, or to stock up for later?",
+  "anchor_context": {
+    "book_id": "b_001",
+    "chapter_id": "ch_02",
+    "paragraph_id": "p_42",
+    "highlighted_text": "The writer Umberto Eco belongs to that small class of scholars..."
+  },
+  "timestamp": "2025-10-27T10:00:00Z"
 }
-
 ```
+### **3.4 System Prompt (Draft)**
 
-### 3.2 Persistence Logic
+"You are a Socratic Mentor. Your goal is deep understanding, not just fact retrieval. When the user asks a question, explain the concept clearly, but ALWAYS end your response with a reflective question that forces the user to apply the logic. Be concise. Do not lecture. Use a warm, academic tone."
 
-* **On Mount:** `useEffect` checks `localStorage.getItem('zen_reader_state')`. If null, load default "Welcome" markdown.
-* **On Change:** `useEffect` listens to state changes (debounced by 500ms) and writes to `localStorage`.
+## **4\. Feature Spec: Round-Table Mode (1:Many)**
 
----
+### **4.1 Overview**
 
-## 4. User Interface Architecture
+This simulates a round table discussion. The user initiates a topic, and 2 distinct AI agents (Personas) discuss it amongst themselves and the user.
 
-The layout must avoid nesting div soup.
+### **4.2 The "Round-table" Orchestration Engine**
 
-### 4.1 Component Tree
+This is the most complex technical component. It requires an **Orchestrator** to manage the "microphone."
 
-```text
-src/
-  components/
-    Layout/
-      ├── MainContainer.jsx  (Handles max-width and centering)
-      └── ThemeWrapper.jsx   (Injects CSS variables for colors)
-    Editor/
-      └── InputArea.jsx      (Raw textarea, minimalist styling)
-    Reader/
-      └── RenderedView.jsx   (The ReactMarkdown output)
-    Controls/
-      ├── SettingsBar.jsx    (Floating or Fixed bottom bar)
-      └── ToggleSwitch.jsx   (Read/Edit mode toggle)
-  context/
-    └── ReaderContext.jsx
+#### **A. Persona Definitions**
 
+We define three fixed personas for the MVP.
+
+1. **The Skeptic:** Questions assumptions, looks for logical fallacies.  
+2. **The Contextualist (Historian):** Connects the text to the time period or other authors.  
+3. **The Pragmatist:** Asks "How is this useful in real life?"
+
+#### **B. Interaction Flow (The "Turn-Taking" Loop)**
+
+1. **User Trigger (Escalation):** User clicks "Invite Panel" from within an active 1:1 Mentor session, or the Mentor proactively suggests: *"This is a matter of debate. Shall we invite the Skeptic and Historian?"*  
+2. **Initialization:** The Orchestrator preserves the existing Mentor chat context. The Mentor acts as the moderator, introducing the new personas and summarizing the user's current stance/question to them.  
+3. **The Loop (Max 4 turns to manage API costs):**  
+   * **Orchestrator Check:** Analyze the conversation history. Who hasn't spoken? Which perspective is missing?  
+   * **Selection:** Orchestrator selects Next\_Speaker (e.g., The Skeptic).  
+   * **Generation:** Call LLM with System\_Prompt\_Skeptic \+ Conversation\_History.  
+   * **Output:** Render message in UI as a distinct bubble (different color/avatar) and simultaneously stream audio output via TTS (using distinct voices for each persona).  
+4. **Pause:** After 3-4 AI exchanges, the system *must* pause and explicitly invite the User to weigh in (User\_Turn) via text or voice (transcribed via Whisper).
+
+### **4.3 UI/UX Requirements**
+
+* **Visual Distinction:** Each persona needs a distinct avatar and accent color (e.g., Skeptic \= Red/Sharp, Historian \= Sepia/Serif).  
+* **Speed Control:** AI responses should not appear instantly. Implement "Typing..." indicators that simulate reading speed (approx. 50ms per character) to lower cognitive load and make it feel like a real chat.  
+* **"Hand Raise" Feature:** The user can interrupt the AI discussion at any time.
+
+### **4.4 Data Structure (Round Table)**
+
+**RoundTableSession Object:**
+```json
+{
+  "session_id": "rt_555",
+  "active_participants": ["user", "skeptic", "pragmatist", "historian"],
+  "turn_count": 3,
+  "max_turns_before_pause": 4,
+  "transcript": [
+    {
+      "speaker": "historian",
+      "text": "It is worth noting that this was written pre-internet..."
+    },
+    {
+      "speaker": "skeptic",
+      "text": "I disagree. The core logic applies regardless of the medium..."
+    }
+  ]
+}
 ```
+## **5\. Shared Technical Components**
 
-### 4.2 The "Engine" (Typography Specs)
+### **5.1 Streaming Response Handler**
 
-This is the most critical technical requirement. We will use Tailwind's configuration to enforce the aesthetic.
+* **Requirement:** Both modes must support streaming tokens (Server-Sent Events).  
+* **Why:** "Great Books" answers are long. Waiting 5 seconds for a full block of text breaks flow. Text must appear token-by-token.
 
-**Tailwind Config (`tailwind.config.js`) Requirements:**
+### **5.2 Frontend Component Structure (React)**
+```js
+<ReadingEnvironment>
+  <BookReader>
+    {/* Text Rendering Engine */}
+  </BookReader>
+  
+  <InteractionPanel mode={mode}> 
+     {/* mode = 'MENTOR' | 'ROUND_TABLE' */}
+     
+     {mode === 'MENTOR' && (
+        <ChatStream messages={messages} />
+     )}
+     
+     {mode === 'ROUND_TABLE' && (
+        <GroupChatStream 
+            participants={participants} 
+            isOrchestrating={loading} 
+        />
+     )}
+  </InteractionPanel>
+</ReadingEnvironment>
+```
+## **6\. Implementation Roadmap (MVP)**
 
-* **Font Families:**
-* Sans: `Inter` (Google Font)
-* Serif: `Merriweather` (Google Font)
-* Mono: `JetBrains Mono` (Google Font)
+1. **Step 1: Infrastructure & Mentor.** Set up the reading view and the basic 1:1 API connection with context injection.  
+2. **Step 2: Persona Definitions.** Refine the System Prompts for the Mentor to ensure the "Socratic" nature works (prompt engineering).  
+3. **Step 3: The Orchestrator.** Build the logic for Round-Table turn-taking. (Hardest engineering task).  
+4. **Step 4: UI Polish.** Visual differentiation between modes. Typing animations.
 
+## **7\. Risks & Mitigations**
 
-* **Color Palettes (Theming):**
-* **Light:** Bg: `#FFFFFF`, Text: `#1A202C` (Slate-900)
-* **True Black (OLED):** Bg: `#000000`, Text: `#A3A3A3` (Neutral-400 - dimmed to reduce contrast strain)
-* **Sepia:** Bg: `#F4ECD8`, Text: `#5C4B37`
-
-
-
-**Fluid Sizing Strategy:**
-Use CSS `clamp()` logic injected via inline styles or Tailwind arbitrary values based on the `fontSizeStep`.
-
-* *Example Formula:* `font-size: clamp(1rem, 0.9rem + 0.5vw, 1.3rem);`
-* Dev must ensure line-height (`leading`) scales with font size to maintain vertical rhythm.
-
----
-
-## 5. Functional Specifications (User Stories)
-
-### Feature 1: The Input
-
-* **Story:** As a user, I want to easily import my document.
-* **Dev Spec:**
-* Hardcode encode the text from poor_charlie_almanack.md for the MVP demo purpose. 
-
-
-
-### Feature 2: The Reader (Read Mode)
-
-* **Story:** As a user, I want to switch to reading mode to see formatted text without distraction.
-* **Dev Spec:**
-* Hide the `<textarea>`.
-* Mount the `<RenderedView>` component.
-* Apply `prose prose-lg` (Tailwind typography classes).
-* Remove all scrollbars (custom CSS to hide scrollbar but allow scrolling) to enhance the "Zen" feel.
-
-
-
-### Feature 3: The Control Deck
-
-* **Story:** As a user, I want to change fonts and themes without leaving the article.
-* **Dev Spec:**
-* **Trigger:** A subtle "Gear" icon or "Aa" icon fixed at the bottom right (mobile) or top right (desktop).
-* **Interaction:** Clicking opens a small popover (Glassmorphism effect: `backdrop-blur-md`).
-* **Controls:**
-* 3 Circles for Themes (White, Black, Sepia).
-* 3 Text Buttons for Fonts (Serif, Sans, Mono).
-* Range slider or +/- buttons for Size.
-
-
-
-
-
-### Feature 4: Auto-Save & Resume
-
-* **Story:** If I close the browser tab and come back, my text and place should be there.
-* **Dev Spec:**
-* Save `window.scrollY` to state on scroll events (throttled).
-* On load, `window.scrollTo(0, savedPosition)`.
-
-
-
----
-
-## 6. Performance & "Clean Code" Guidelines
-
-### 6.1 Lighthouse Targets
-
-* **LCP (Largest Contentful Paint):** < 1.2s.
-* **CLS (Cumulative Layout Shift):** 0.00. (Critical: Font loading must use `font-display: swap` or optional to prevent layout jumping).
-
-### 6.2 Asset Optimization
-
-* **Fonts:** Do **not** import all Google Font weights. Import only:
-* Inter: 400, 700.
-* Merriweather: 400, 700, 400i.
-* JetBrains: 400.
-
-
-* **SVG:** Use direct SVG code within components.
-* *Bad:* `import { Settings } from 'lucide-react'` (Adds library weight).
-* *Good:* `<svg width="24"...><path.../></svg>` (Zero weight).
-
-
-
----
-
-## 7. Developer Handoff Checklist
-
-To start immediately, the developer needs:
-
-1. **Repository Init:** `npm create vite@latest zen-reader --template react`
-2. **Dependencies:** `npm install tailwindcss postcss autoprefixer react-markdown @tailwindcss/typography`
-3. **Asset Folder:** Place the `favicon.ico` (Use a simple Zen circle SVG).
-
+* **Risk:** Round-Table loops get expensive (Token usage).  
+  * *Mitigation:* Hard limit of 4 AI turns per user interaction. User must press "Continue" to generate more.  
+* **Risk:** Hallucinations (AI inventing book quotes).  
+  * *Mitigation:* **Prioritize Liveliness.** temperature set to **0.7** to ensure distinct, bold persona voices. Mitigate fabrications by adding a "Fact Check" instruction in the system prompt rather than restricting creativity, accepting a slightly higher risk of hallucination in exchange for a much more engaging "dinner party" vibe.
