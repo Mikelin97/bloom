@@ -73,7 +73,7 @@ function sendEvent(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function buildContext(anchor, viewportText) {
+function buildContext(anchor, viewportText, conversationIndex) {
   const lines = [];
   if (anchor?.bookTitle) {
     const author = anchor.author ? ` by ${anchor.author}` : '';
@@ -91,11 +91,14 @@ function buildContext(anchor, viewportText) {
   if (anchor?.text) {
     lines.push(`Anchor passage: ${anchor.text}`);
   }
+  if (typeof conversationIndex === 'string' && conversationIndex.trim()) {
+    lines.push(`Prior conversation index (use only if relevant):\n${conversationIndex.trim()}`);
+  }
   return lines.join('\n');
 }
 
-function buildRealtimeInstructions(anchor, viewportText) {
-  const context = buildContext(anchor, viewportText);
+function buildRealtimeInstructions(anchor, viewportText, conversationIndex) {
+  const context = buildContext(anchor, viewportText, conversationIndex);
   const englishGuide = 'Respond in English.';
   if (!context) return `${englishGuide}\n${MENTOR_SYSTEM_PROMPT}`;
   return `${englishGuide}\n${MENTOR_SYSTEM_PROMPT}\n\n${context}`;
@@ -170,8 +173,8 @@ async function writeTempFile(buffer, filename) {
 app.post('/api/mentor', async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
-    const { messages, anchor, viewportText } = req.body ?? {};
-    const context = buildContext(anchor, viewportText);
+    const { messages, anchor, viewportText, conversationIndex } = req.body ?? {};
+    const context = buildContext(anchor, viewportText, conversationIndex);
     const input = [
       { role: 'system', content: MENTOR_SYSTEM_PROMPT },
       { role: 'developer', content: context },
@@ -186,9 +189,9 @@ app.post('/api/mentor', async (req, res) => {
 app.post('/api/roundtable', async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
-    const { persona, messages, anchor, viewportText } = req.body ?? {};
+    const { persona, messages, anchor, viewportText, conversationIndex } = req.body ?? {};
     const prompt = PERSONA_PROMPTS[persona] || PERSONA_PROMPTS.skeptic;
-    const context = buildContext(anchor, viewportText);
+    const context = buildContext(anchor, viewportText, conversationIndex);
     const input = [
       { role: 'system', content: prompt },
       { role: 'developer', content: context },
@@ -203,8 +206,9 @@ app.post('/api/roundtable', async (req, res) => {
 app.post('/api/realtime-token', async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
-    const { anchor, viewportText } = req.body ?? {};
-    const instructions = buildRealtimeInstructions(anchor, viewportText);
+    const { anchor, viewportText, conversationIndex, mode } = req.body ?? {};
+    const instructions = buildRealtimeInstructions(anchor, viewportText, conversationIndex);
+    const allowResponses = mode !== 'ROUND_TABLE';
     const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
       method: 'POST',
       headers: {
@@ -224,8 +228,8 @@ app.post('/api/realtime-token', async (req, res) => {
               },
               turn_detection: {
                 type: 'server_vad',
-                create_response: true,
-                interrupt_response: true
+                create_response: allowResponses,
+                interrupt_response: allowResponses
               }
             },
             output: {
