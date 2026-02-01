@@ -5,11 +5,9 @@ import RenderedView from './components/Reader/RenderedView';
 import SettingsBar from './components/Controls/SettingsBar';
 import { useReader } from './context/ReaderContext';
 import InteractionPanel from './components/Interaction/InteractionPanel';
-import { useInteraction } from './context/InteractionContext';
 
 export default function App() {
   const { state, dispatch } = useReader();
-  const { state: interactionState } = useInteraction();
   const restoredRef = useRef(false);
 
   useEffect(() => {
@@ -42,7 +40,7 @@ export default function App() {
 
   return (
     <ThemeWrapper>
-      <MainContainer panelOpen={interactionState.mode !== 'IDLE'}>
+      <MainContainer>
         <RenderedView />
       </MainContainer>
       <InteractionPanel />

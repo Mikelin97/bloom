@@ -4,6 +4,13 @@ export type InteractionMode = 'IDLE' | 'MENTOR' | 'ROUND_TABLE';
 export type Persona = 'mentor' | 'skeptic' | 'historian' | 'pragmatist';
 export type MessageRole = 'user' | 'ai';
 
+export const PERSONA_DISPLAY: Record<Persona, { name: string; role: string }> = {
+  mentor: { name: 'Catherine', role: 'Mentor' },
+  skeptic: { name: 'Henry', role: 'Skeptic' },
+  historian: { name: 'Amelia', role: 'Historian' },
+  pragmatist: { name: 'Marcus', role: 'Pragmatist' }
+};
+
 export interface AnchorContext {
   id: string;
   text: string;
@@ -24,6 +31,14 @@ export interface Message {
   timestamp: string;
 }
 
+export interface ConversationIndexEntry {
+  anchorId: string;
+  anchorSnippet: string;
+  lastUserMessage?: string;
+  lastAssistantMessage?: string;
+  updatedAt: string;
+}
+
 interface RoundTableState {
   sessionId: string | null;
   turnCount: number;
@@ -36,20 +51,26 @@ interface RoundTableState {
 export interface InteractionState {
   mode: InteractionMode;
   anchor: AnchorContext | null;
+  anchors: Record<string, AnchorContext>;
   messages: Message[];
   viewportText: string;
+  voiceMode: boolean;
   roundTable: RoundTableState;
 }
 
 interface InteractionActions {
   setMode: (mode: InteractionMode) => void;
   setAnchor: (id: string, text: string) => void;
+  clearAnchor: () => void;
   setViewportText: (text: string) => void;
   sendMessage: (text: string) => void;
   inviteRoundTable: () => void;
   continueRoundTable: () => void;
   raiseHand: () => void;
+  setVoiceMode: (enabled: boolean) => void;
   clearConversation: () => void;
+  addMessage: (message: Message) => void;
+  updateMessage: (id: string, updates: Partial<Message>) => void;
 }
 
 interface InteractionContextValue {
@@ -99,6 +120,13 @@ function limitWords(value: string, limit: number) {
   return words.slice(0, limit).join(' ');
 }
 
+function getMessagesForAnchor(messages: Message[], anchorId?: string | null) {
+  if (!anchorId) {
+    return messages.filter((message) => !message.anchorId);
+  }
+  return messages.filter((message) => message.anchorId === anchorId);
+}
+
 function buildHistory(
   sourceMessages: Message[],
   modeFilter?: InteractionMode,
@@ -111,18 +139,86 @@ function buildHistory(
       role: message.role === 'user' ? 'user' : 'assistant',
       content:
         labelPersonas && message.role === 'ai'
-          ? `${message.persona.toUpperCase()}: ${message.content}`
+          ? `${PERSONA_DISPLAY[message.persona].name.toUpperCase()}: ${message.content}`
           : message.content
     }))
     .filter((message) => message.content.length > 0);
+}
+
+export function buildConversationIndexEntries({
+  messages,
+  anchorsById,
+  activeAnchorId,
+  maxEntries = 3
+}: {
+  messages: Message[];
+  anchorsById: Record<string, AnchorContext>;
+  activeAnchorId?: string | null;
+  maxEntries?: number;
+}): ConversationIndexEntry[] {
+  const grouped = new Map<string, Message[]>();
+  messages.forEach((message) => {
+    if (message.status !== 'done') return;
+    if (!message.anchorId) return;
+    if (message.anchorId === activeAnchorId) return;
+    const bucket = grouped.get(message.anchorId) ?? [];
+    bucket.push(message);
+    grouped.set(message.anchorId, bucket);
+  });
+
+  const entries: ConversationIndexEntry[] = [];
+  grouped.forEach((groupMessages, anchorId) => {
+    const anchor = anchorsById[anchorId];
+    if (!anchor) return;
+    const lastMessage = groupMessages[groupMessages.length - 1];
+    const lastUser = [...groupMessages].reverse().find((message) => message.role === 'user');
+    const lastAssistant = [...groupMessages].reverse().find((message) => message.role === 'ai');
+    entries.push({
+      anchorId,
+      anchorSnippet: limitWords(normalizeText(anchor.text), 28),
+      lastUserMessage: lastUser ? limitWords(normalizeText(lastUser.content), 28) : undefined,
+      lastAssistantMessage: lastAssistant
+        ? limitWords(normalizeText(lastAssistant.content), 28)
+        : undefined,
+      updatedAt: lastMessage?.timestamp || new Date(0).toISOString()
+    });
+  });
+
+  return entries
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+    .slice(0, maxEntries);
+}
+
+export function buildConversationIndexText(params: {
+  messages: Message[];
+  anchorsById: Record<string, AnchorContext>;
+  activeAnchorId?: string | null;
+  maxEntries?: number;
+}) {
+  const entries = buildConversationIndexEntries(params);
+  if (!entries.length) return '';
+  return entries
+    .map((entry, index) => {
+      const parts = [`Anchor: "${entry.anchorSnippet}"`];
+      if (entry.lastUserMessage) {
+        parts.push(`User: "${entry.lastUserMessage}"`);
+      }
+      if (entry.lastAssistantMessage) {
+        parts.push(`Assistant: "${entry.lastAssistantMessage}"`);
+      }
+      return `${index + 1}. ${parts.join(' | ')}`;
+    })
+    .join('\n');
 }
 
 export function InteractionProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<InteractionState>({
     mode: 'IDLE',
     anchor: null,
+    anchors: {},
     messages: [],
     viewportText: '',
+    voiceMode: false,
     roundTable: {
       sessionId: null,
       turnCount: 0,
@@ -277,6 +373,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     setState((prev) => ({
       ...prev,
       mode,
+      voiceMode: mode === 'IDLE' ? false : prev.voiceMode,
       roundTable:
         mode === 'ROUND_TABLE'
           ? prev.roundTable
@@ -287,7 +384,38 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
   const setAnchor = (id: string, text: string) => {
     cancelActiveStream();
     const anchor = buildAnchor(text, id);
-    setState((prev) => ({ ...prev, anchor, mode: 'MENTOR' }));
+    setState((prev) => ({
+      ...prev,
+      anchor,
+      anchors: { ...prev.anchors, [id]: anchor },
+      mode: 'MENTOR',
+      roundTable: {
+        ...prev.roundTable,
+        sessionId: null,
+        turnCount: 0,
+        isOrchestrating: false,
+        awaitingUser: false,
+        nextPersonaIndex: 0
+      }
+    }));
+  };
+
+  const clearAnchor = () => {
+    cancelActiveStream();
+    setState((prev) => ({
+      ...prev,
+      anchor: null,
+      mode: 'IDLE',
+      voiceMode: false,
+      roundTable: {
+        ...prev.roundTable,
+        sessionId: null,
+        turnCount: 0,
+        isOrchestrating: false,
+        awaitingUser: false,
+        nextPersonaIndex: 0
+      }
+    }));
   };
 
   const setViewportText = (text: string) => {
@@ -306,6 +434,12 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
 
     const anchorId = stateRef.current.anchor?.id;
     const mode = stateRef.current.mode === 'IDLE' ? 'MENTOR' : stateRef.current.mode;
+    const anchorMessages = getMessagesForAnchor(stateRef.current.messages, anchorId);
+    const conversationIndex = buildConversationIndexText({
+      messages: stateRef.current.messages,
+      anchorsById: stateRef.current.anchors,
+      activeAnchorId: anchorId
+    });
 
     const userMessage: Message = {
       id: createId(),
@@ -326,17 +460,18 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
         mode,
         roundTable: { ...prev.roundTable, awaitingUser: false, turnCount: 0 }
       }));
-      const messagesOverride = [...stateRef.current.messages, userMessage];
+      const messagesOverride = [...anchorMessages, userMessage];
       void runRoundTableTurns(messagesOverride);
       return;
     }
 
     setState((prev) => ({ ...prev, mode }));
-    const history = buildHistory([...stateRef.current.messages, userMessage], 'MENTOR');
+    const history = buildHistory([...anchorMessages, userMessage], 'MENTOR');
     const payload = {
       messages: history,
       anchor: stateRef.current.anchor,
-      viewportText: stateRef.current.viewportText
+      viewportText: stateRef.current.viewportText,
+      conversationIndex
     };
     void streamFromApi({
       endpoint: '/api/mentor',
@@ -365,13 +500,21 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
       }
     }));
 
-    const history = buildHistory(stateRef.current.messages, undefined, true);
+    const anchorMessages = getMessagesForAnchor(
+      stateRef.current.messages,
+      stateRef.current.anchor?.id
+    );
+    const history = buildHistory(anchorMessages, undefined, true);
+    const conversationIndex = buildConversationIndexText({
+      messages: stateRef.current.messages,
+      anchorsById: stateRef.current.anchors,
+      activeAnchorId: stateRef.current.anchor?.id
+    });
     const introMessages = [
       ...history,
       {
         role: 'user',
-        content:
-          'Introduce the round-table panel (Skeptic, Historian, Pragmatist) and summarize the user question in 1-2 sentences.'
+        content: `Introduce the round-table panel (${PERSONA_DISPLAY.skeptic.name}, ${PERSONA_DISPLAY.historian.name}, ${PERSONA_DISPLAY.pragmatist.name}) and summarize the user question in 1-2 sentences.`
       }
     ];
 
@@ -380,7 +523,8 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
       payload: {
         messages: introMessages,
         anchor: stateRef.current.anchor,
-        viewportText: stateRef.current.viewportText
+        viewportText: stateRef.current.viewportText,
+        conversationIndex
       },
       persona: 'mentor',
       mode: 'ROUND_TABLE',
@@ -412,16 +556,26 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
 
     let localNextPersonaIndex = stateRef.current.roundTable.nextPersonaIndex;
     let localTurnCount = 0;
-    let rollingMessages = [...(messagesOverride ?? stateRef.current.messages)];
+    const anchorMessages = getMessagesForAnchor(
+      messagesOverride ?? stateRef.current.messages,
+      stateRef.current.anchor?.id
+    );
+    let rollingMessages = [...anchorMessages];
 
     for (let i = 0; i < turnsToRun; i += 1) {
       const persona = PERSONA_ORDER[localNextPersonaIndex % PERSONA_ORDER.length];
       const history = buildHistory(rollingMessages, undefined, true);
+      const conversationIndex = buildConversationIndexText({
+        messages: stateRef.current.messages,
+        anchorsById: stateRef.current.anchors,
+        activeAnchorId: stateRef.current.anchor?.id
+      });
       const payload = {
         messages: history,
         anchor: stateRef.current.anchor,
         viewportText: stateRef.current.viewportText,
-        persona
+        persona,
+        conversationIndex
       };
 
       const result = await streamFromApi({
@@ -489,10 +643,15 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     }));
   };
 
+  const setVoiceMode = (enabled: boolean) => {
+    setState((prev) => ({ ...prev, voiceMode: enabled }));
+  };
+
   const clearConversation = () => {
     cancelActiveStream();
     setState((prev) => ({
       ...prev,
+      anchors: {},
       messages: [],
       roundTable: { ...prev.roundTable, sessionId: null, turnCount: 0, awaitingUser: false }
     }));
@@ -501,12 +660,16 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
   const actions: InteractionActions = {
     setMode,
     setAnchor,
+    clearAnchor,
     setViewportText,
     sendMessage,
     inviteRoundTable,
     continueRoundTable,
     raiseHand,
-    clearConversation
+    setVoiceMode,
+    clearConversation,
+    addMessage: appendMessage,
+    updateMessage
   };
 
   return (

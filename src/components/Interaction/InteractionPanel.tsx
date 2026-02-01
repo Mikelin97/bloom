@@ -1,5 +1,13 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { InteractionMode, Message, Persona, useInteraction } from '../../context/InteractionContext';
+import { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  buildConversationIndexEntries,
+  buildConversationIndexText,
+  InteractionMode,
+  Message,
+  Persona,
+  PERSONA_DISPLAY,
+  useInteraction
+} from '../../context/InteractionContext';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -8,33 +16,99 @@ const PERSONA_STYLES: Record<
   { label: string; accent: string; bubble: string; ring: string; avatar: string }
 > = {
   mentor: {
-    label: 'Mentor',
+    label: PERSONA_DISPLAY.mentor.name,
     accent: 'text-emerald-500',
     bubble: 'bg-emerald-500/10 border-emerald-500/30',
     ring: 'ring-emerald-500/30',
-    avatar: 'M'
+    avatar: PERSONA_DISPLAY.mentor.name.slice(0, 1)
   },
   skeptic: {
-    label: 'Skeptic',
+    label: PERSONA_DISPLAY.skeptic.name,
     accent: 'text-rose-500',
     bubble: 'bg-rose-500/10 border-rose-500/30',
     ring: 'ring-rose-500/30',
-    avatar: 'S'
+    avatar: PERSONA_DISPLAY.skeptic.name.slice(0, 1)
   },
   historian: {
-    label: 'Historian',
+    label: PERSONA_DISPLAY.historian.name,
     accent: 'text-amber-600',
     bubble: 'bg-amber-500/10 border-amber-500/30',
     ring: 'ring-amber-500/30',
-    avatar: 'H'
+    avatar: PERSONA_DISPLAY.historian.name.slice(0, 1)
   },
   pragmatist: {
-    label: 'Pragmatist',
+    label: PERSONA_DISPLAY.pragmatist.name,
     accent: 'text-sky-500',
     bubble: 'bg-sky-500/10 border-sky-500/30',
     ring: 'ring-sky-500/30',
-    avatar: 'P'
+    avatar: PERSONA_DISPLAY.pragmatist.name.slice(0, 1)
   }
+};
+
+const AUDIO_MIME_CANDIDATES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/mp4',
+  'audio/m4a',
+  'audio/aac',
+  'audio/wav'
+];
+
+function pickAudioMimeType() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
+    return '';
+  }
+  return AUDIO_MIME_CANDIDATES.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function getAudioExtension(mimeType: string) {
+  const normalized = mimeType.split(';')[0].trim();
+  if (normalized.includes('webm')) return 'webm';
+  if (normalized.includes('ogg')) return 'ogg';
+  if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'mp3';
+  if (normalized.includes('wav')) return 'wav';
+  if (normalized.includes('aac')) return 'aac';
+  if (normalized.includes('mp4') || normalized.includes('m4a')) return 'm4a';
+  return 'webm';
+}
+
+function createLocalId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `id_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function isNotAllowedError(error: unknown) {
+  return (error as { name?: string })?.name === 'NotAllowedError';
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const PERSONA_PREFIX_PATTERN = new RegExp(
+  `^\\s*(?:${Object.values(PERSONA_DISPLAY)
+    .flatMap((persona) => [persona.name, persona.role])
+    .map(escapeRegExp)
+    .join('|')})\\s*[:\\-–—]\\s*`,
+  'i'
+);
+
+function sanitizeSpeechText(text: string, mode: InteractionMode) {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  if (mode !== 'ROUND_TABLE') return trimmed;
+  return trimmed.replace(PERSONA_PREFIX_PATTERN, '').trim();
+}
+
+type SpeechQueueItem = {
+  text: string;
+  persona: Persona;
+  mode: InteractionMode;
+  audioUrl?: string;
+  audioPromise?: Promise<string>;
+  abortController?: AbortController;
 };
 
 function TypingDots() {
@@ -113,18 +187,51 @@ export default function InteractionPanel() {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [audioUnlockRequired, setAudioUnlockRequired] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const spokenIdsRef = useRef<Set<string>>(new Set());
-  const speechQueueRef = useRef<Array<{ text: string; persona: Persona }>>([]);
+  const speechQueueRef = useRef<SpeechQueueItem[]>([]);
   const isSpeakingRef = useRef(false);
   const ttsAbortRef = useRef<AbortController | null>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const inputItemIdRef = useRef<string | null>(null);
+  const outputItemIdRef = useRef<string | null>(null);
+  const inputMessageMapRef = useRef<Map<string, string>>(new Map());
+  const outputMessageMapRef = useRef<Map<string, string>>(new Map());
+  const audioUnlockRef = useRef(false);
+  const voiceMode = state.voiceMode;
+  const [voiceStatus, setVoiceStatus] = useState<'idle' | 'connecting' | 'listening' | 'responding'>(
+    'idle'
+  );
+  const [voiceInputTranscript, setVoiceInputTranscript] = useState('');
+  const [voiceOutputTranscript, setVoiceOutputTranscript] = useState('');
+  const stateRef = useRef(state);
 
-  const panelOpen = state.mode !== 'IDLE';
+  const panelOpen = state.mode !== 'IDLE' && !voiceMode;
   const anchor = state.anchor;
+  const activeAnchorId = state.anchor?.id || null;
+  const activeMessages = useMemo(() => {
+    if (!activeAnchorId) {
+      return state.messages.filter((message) => !message.anchorId);
+    }
+    return state.messages.filter((message) => message.anchorId === activeAnchorId);
+  }, [state.messages, activeAnchorId]);
+  const conversationIndexEntries = useMemo(
+    () =>
+      buildConversationIndexEntries({
+        messages: state.messages,
+        anchorsById: state.anchors,
+        activeAnchorId
+      }),
+    [state.messages, state.anchors, activeAnchorId]
+  );
   const supportsRecording = useMemo(() => {
     return (
       typeof MediaRecorder !== 'undefined' &&
@@ -132,13 +239,28 @@ export default function InteractionPanel() {
       !!navigator.mediaDevices?.getUserMedia
     );
   }, []);
+  const supportsVoiceMode = useMemo(() => {
+    return (
+      typeof RTCPeerConnection !== 'undefined' &&
+      typeof navigator !== 'undefined' &&
+      !!navigator.mediaDevices?.getUserMedia
+    );
+  }, []);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    audioUnlockRef.current = audioUnlockRequired;
+  }, [audioUnlockRequired]);
 
   useEffect(() => {
     if (!panelOpen) return;
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
     scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' });
-  }, [state.messages.length, state.roundTable.isOrchestrating, panelOpen, state.mode]);
+  }, [activeMessages.length, state.roundTable.isOrchestrating, panelOpen, state.mode]);
 
   useEffect(() => {
     if (!panelOpen) {
@@ -147,16 +269,28 @@ export default function InteractionPanel() {
   }, [panelOpen]);
 
   useEffect(() => {
-    if (!panelOpen) {
+    if (!panelOpen && !voiceMode) {
       stopSpeech();
     }
-  }, [panelOpen]);
+  }, [panelOpen, voiceMode]);
+
+  useEffect(() => {
+    stopSpeech();
+  }, [state.anchor?.id]);
 
   useEffect(() => {
     if (!voiceEnabled) {
       stopSpeech();
     }
     setVoiceError(null);
+    setAudioUnlockRequired(false);
+    audioUnlockRef.current = false;
+  }, [voiceEnabled]);
+
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = !voiceEnabled;
+    }
   }, [voiceEnabled]);
 
   const handleSubmit = (event: FormEvent) => {
@@ -170,11 +304,30 @@ export default function InteractionPanel() {
     setDraft('');
   };
 
+  const handleAudioUnlock = () => {
+    setAudioUnlockRequired(false);
+    audioUnlockRef.current = false;
+    setVoiceError(null);
+    if (remoteAudioRef.current && voiceMode) {
+      remoteAudioRef.current.muted = !voiceEnabled;
+      remoteAudioRef.current
+        .play()
+        .catch((error) => setVoiceError(error?.message || 'Audio playback failed.'));
+    }
+    void playNextSpeech();
+  };
+
   const stopSpeech = () => {
     if (ttsAbortRef.current) {
       ttsAbortRef.current.abort();
       ttsAbortRef.current = null;
     }
+    speechQueueRef.current.forEach((item) => {
+      item.abortController?.abort();
+      if (item.audioUrl) {
+        URL.revokeObjectURL(item.audioUrl);
+      }
+    });
     speechQueueRef.current = [];
     isSpeakingRef.current = false;
     if (audioRef.current) {
@@ -183,10 +336,278 @@ export default function InteractionPanel() {
     }
   };
 
+  const ensureRemoteAudio = () => {
+    if (!remoteAudioRef.current) {
+      const audio = new Audio();
+      audio.autoplay = true;
+      audio.setAttribute('playsinline', 'true');
+      audio.setAttribute('webkit-playsinline', 'true');
+      audio.muted = !voiceEnabled;
+      remoteAudioRef.current = audio;
+    }
+    return remoteAudioRef.current;
+  };
+
+  const resetVoiceTranscripts = () => {
+    inputItemIdRef.current = null;
+    outputItemIdRef.current = null;
+    inputMessageMapRef.current.clear();
+    outputMessageMapRef.current.clear();
+    setVoiceInputTranscript('');
+    setVoiceOutputTranscript('');
+  };
+
+  const cleanupRealtime = () => {
+    dataChannelRef.current?.close();
+    dataChannelRef.current = null;
+    peerRef.current?.close();
+    peerRef.current = null;
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+    }
+    setVoiceStatus('idle');
+  };
+
+  const ensureVoiceMessage = (
+    mapRef: MutableRefObject<Map<string, string>>,
+    itemId: string,
+    role: Message['role'],
+    persona: Persona
+  ) => {
+    let messageId = mapRef.current.get(itemId);
+    if (!messageId) {
+      messageId = createLocalId();
+      mapRef.current.set(itemId, messageId);
+      const mode = stateRef.current.mode === 'IDLE' ? 'MENTOR' : stateRef.current.mode;
+      actions.addMessage({
+        id: messageId,
+        role,
+        persona,
+        content: '',
+        status: 'typing',
+        anchorId: stateRef.current.anchor?.id,
+        mode,
+        timestamp: new Date().toISOString()
+      });
+    }
+    return messageId;
+  };
+
+  const handleRealtimeEvent = (event: MessageEvent) => {
+    let payload: any;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    const { type } = payload || {};
+    if (!type) return;
+
+    const currentMode = stateRef.current.mode === 'IDLE' ? 'MENTOR' : stateRef.current.mode;
+    const allowRealtimeResponses = currentMode !== 'ROUND_TABLE';
+
+    if (type === 'input_audio_buffer.speech_started') {
+      setVoiceStatus('listening');
+      return;
+    }
+    if (type === 'input_audio_buffer.speech_stopped') {
+      setVoiceStatus('responding');
+      return;
+    }
+    if (type === 'conversation.item.input_audio_transcription.delta') {
+      const itemId = payload.item_id || 'input';
+      if (inputItemIdRef.current !== itemId) {
+        inputItemIdRef.current = itemId;
+        setVoiceInputTranscript('');
+      }
+      if (payload.delta) {
+        setVoiceInputTranscript((prev) => {
+          const nextTranscript = prev + payload.delta;
+          if (allowRealtimeResponses) {
+            const messageId = ensureVoiceMessage(inputMessageMapRef, itemId, 'user', 'mentor');
+            actions.updateMessage(messageId, { content: nextTranscript, status: 'typing' });
+          }
+          return nextTranscript;
+        });
+      }
+      return;
+    }
+    if (type === 'conversation.item.input_audio_transcription.completed') {
+      const itemId = payload.item_id || 'input';
+      inputItemIdRef.current = itemId;
+      if (payload.transcript) {
+        setVoiceInputTranscript(payload.transcript);
+        const transcript = String(payload.transcript).trim();
+        if (transcript) {
+          if (!allowRealtimeResponses) {
+            actions.sendMessage(transcript);
+          } else {
+            const messageId = ensureVoiceMessage(inputMessageMapRef, itemId, 'user', 'mentor');
+            actions.updateMessage(messageId, { content: transcript, status: 'done' });
+          }
+        }
+      }
+      return;
+    }
+    if (type === 'response.output_text.delta') {
+      if (!allowRealtimeResponses) return;
+      const outputId = payload.response_id || payload.item_id || 'output';
+      if (outputItemIdRef.current !== outputId) {
+        outputItemIdRef.current = outputId;
+        setVoiceOutputTranscript('');
+      }
+      if (payload.delta) {
+        setVoiceOutputTranscript((prev) => {
+          const nextTranscript = prev + payload.delta;
+          const messageId = ensureVoiceMessage(outputMessageMapRef, outputId, 'ai', 'mentor');
+          actions.updateMessage(messageId, { content: nextTranscript, status: 'typing' });
+          return nextTranscript;
+        });
+      }
+      setVoiceStatus('responding');
+      return;
+    }
+    if (type === 'response.output_text.done') {
+      if (!allowRealtimeResponses) return;
+      const outputId = payload.response_id || payload.item_id || outputItemIdRef.current || 'output';
+      if (payload.text) {
+        setVoiceOutputTranscript(payload.text);
+        const messageId = ensureVoiceMessage(outputMessageMapRef, outputId, 'ai', 'mentor');
+        actions.updateMessage(messageId, { content: payload.text, status: 'done' });
+      }
+      setVoiceStatus('listening');
+      return;
+    }
+    if (type === 'response.output_audio.done') {
+      setVoiceStatus('listening');
+      return;
+    }
+    if (type === 'error') {
+      setVoiceError(payload?.message || 'Voice mode error.');
+    }
+  };
+
+  const connectRealtime = async () => {
+    if (peerRef.current) return;
+    setVoiceStatus('connecting');
+    setVoiceError(null);
+    resetVoiceTranscripts();
+    stopSpeech();
+    if (isRecording) {
+      endRecording();
+    }
+
+    try {
+      const tokenResponse = await fetch(`${API_BASE}/api/realtime-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          anchor: stateRef.current.anchor,
+          viewportText: stateRef.current.viewportText,
+          mode: stateRef.current.mode,
+          conversationIndex: buildConversationIndexText({
+            messages: stateRef.current.messages,
+            anchorsById: stateRef.current.anchors,
+            activeAnchorId: stateRef.current.anchor?.id
+          })
+        })
+      });
+      if (!tokenResponse.ok) {
+        throw new Error(`Realtime token failed with status ${tokenResponse.status}`);
+      }
+      const tokenData = await tokenResponse.json();
+      const clientSecret =
+        tokenData?.value || tokenData?.client_secret?.value || tokenData?.client_secret;
+      if (!clientSecret) {
+        throw new Error('Missing realtime client secret.');
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+
+      const pc = new RTCPeerConnection();
+      peerRef.current = pc;
+
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      pc.ontrack = (event) => {
+        const audio = ensureRemoteAudio();
+        if (event.streams[0]) {
+          audio.srcObject = event.streams[0];
+          audio
+            .play()
+            .catch((error) => {
+              if (isNotAllowedError(error)) {
+                audioUnlockRef.current = true;
+                setAudioUnlockRequired(true);
+                setVoiceError('Audio playback is blocked. Tap "Enable audio" to continue.');
+              }
+            });
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setVoiceError('Voice mode connection lost.');
+          actions.setVoiceMode(false);
+        }
+      };
+
+      const dataChannel = pc.createDataChannel('oai-events');
+      dataChannel.onmessage = handleRealtimeEvent;
+      dataChannel.onopen = () => setVoiceStatus('listening');
+      dataChannel.onerror = () => setVoiceError('Voice mode data channel error.');
+      dataChannel.onclose = () => setVoiceStatus('idle');
+      dataChannelRef.current = dataChannel;
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const sdp = pc.localDescription?.sdp;
+      if (!sdp) {
+        throw new Error('Missing SDP offer.');
+      }
+
+      const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${clientSecret}`,
+          'Content-Type': 'application/sdp'
+        },
+        body: sdp
+      });
+
+      if (!sdpResponse.ok) {
+        throw new Error(`Realtime call failed with status ${sdpResponse.status}`);
+      }
+
+      const answerSdp = await sdpResponse.text();
+      await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+    } catch (error: any) {
+      cleanupRealtime();
+      if (isNotAllowedError(error)) {
+        setVoiceError('Microphone or audio access blocked. Check Safari permissions and tap "Enable audio".');
+        audioUnlockRef.current = true;
+        setAudioUnlockRequired(true);
+      } else {
+        setVoiceError(error?.message || 'Unable to start voice mode.');
+      }
+      actions.setVoiceMode(false);
+    }
+  };
+
+  const disconnectRealtime = () => {
+    cleanupRealtime();
+    resetVoiceTranscripts();
+  };
+
   const playAudio = (url: string) =>
     new Promise<void>((resolve, reject) => {
       if (!audioRef.current) {
         audioRef.current = new Audio();
+        audioRef.current.setAttribute('playsinline', 'true');
+        audioRef.current.setAttribute('webkit-playsinline', 'true');
       }
       const audio = audioRef.current;
       audio.src = url;
@@ -195,31 +616,76 @@ export default function InteractionPanel() {
       audio.play().catch(reject);
     });
 
-  const speakText = async (text: string, persona: Persona) => {
-    if (!voiceEnabled) return;
-    const controller = new AbortController();
-    ttsAbortRef.current = controller;
+  const fetchSpeechAudio = async (
+    text: string,
+    persona: Persona,
+    controller?: AbortController
+  ) => {
+    if (!voiceEnabled) {
+      throw new Error('Voice disabled.');
+    }
     const response = await fetch(`${API_BASE}/api/tts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, persona }),
-      signal: controller.signal
+      signal: controller?.signal
     });
 
     if (!response.ok) {
       throw new Error(`Voice request failed with status ${response.status}`);
     }
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
+    return URL.createObjectURL(blob);
+  };
+
+  const prefetchSpeechItem = (item: SpeechQueueItem) => {
+    if (item.audioPromise || item.audioUrl || !voiceEnabled) {
+      return;
+    }
+    const controller = new AbortController();
+    item.abortController = controller;
+    item.audioPromise = fetchSpeechAudio(item.text, item.persona, controller)
+      .then((url) => {
+        item.audioUrl = url;
+        return url;
+      })
+      .catch((error) => {
+        item.abortController = undefined;
+        item.audioPromise = undefined;
+        throw error;
+      });
+  };
+
+  const playSpeechItem = async (item: SpeechQueueItem) => {
+    let url: string | undefined;
+    let controller: AbortController | null = null;
     try {
+      if (item.audioUrl) {
+        url = item.audioUrl;
+      } else if (item.audioPromise) {
+        url = await item.audioPromise;
+      } else {
+        controller = new AbortController();
+        ttsAbortRef.current = controller;
+        url = await fetchSpeechAudio(item.text, item.persona, controller);
+      }
+      if (!url) return;
       await playAudio(url);
     } finally {
-      URL.revokeObjectURL(url);
+      if (controller && ttsAbortRef.current === controller) {
+        ttsAbortRef.current = null;
+      }
+      if (url) {
+        URL.revokeObjectURL(url);
+      }
+      if (item.audioUrl === url) {
+        item.audioUrl = undefined;
+      }
     }
   };
 
   const playNextSpeech = async () => {
-    if (isSpeakingRef.current || !voiceEnabled) {
+    if (isSpeakingRef.current || !voiceEnabled || audioUnlockRef.current) {
       return;
     }
     const next = speechQueueRef.current.shift();
@@ -228,22 +694,30 @@ export default function InteractionPanel() {
     }
     isSpeakingRef.current = true;
     try {
-      await speakText(next.text, next.persona);
+      await playSpeechItem(next);
     } catch (error: any) {
       if (error?.name !== 'AbortError') {
-        setVoiceError(error?.message || 'Voice playback failed.');
+        if (isNotAllowedError(error)) {
+          speechQueueRef.current.unshift(next);
+          audioUnlockRef.current = true;
+          setAudioUnlockRequired(true);
+          setVoiceError('Audio playback is blocked. Tap "Enable audio" to continue.');
+        } else {
+          setVoiceError(error?.message || 'Voice playback failed.');
+        }
       }
     } finally {
       isSpeakingRef.current = false;
-      if (speechQueueRef.current.length > 0) {
+      if (speechQueueRef.current.length > 0 && !audioUnlockRef.current) {
         void playNextSpeech();
       }
     }
   };
 
   useEffect(() => {
-    if (!voiceEnabled) return;
-    const newMessages = state.messages.filter(
+    const shouldPlayTts = voiceEnabled && (!voiceMode || state.mode === 'ROUND_TABLE');
+    if (!shouldPlayTts) return;
+    const newMessages = activeMessages.filter(
       (message) =>
         message.role === 'ai' &&
         message.status === 'done' &&
@@ -252,15 +726,25 @@ export default function InteractionPanel() {
     if (!newMessages.length) return;
     newMessages.forEach((message) => {
       spokenIdsRef.current.add(message.id);
-      if (message.content.trim()) {
-        speechQueueRef.current.push({ text: message.content, persona: message.persona });
+      const cleaned = sanitizeSpeechText(message.content, message.mode);
+      if (!cleaned) {
+        return;
+      }
+      const item: SpeechQueueItem = {
+        text: cleaned,
+        persona: message.persona,
+        mode: message.mode
+      };
+      speechQueueRef.current.push(item);
+      if (message.mode === 'ROUND_TABLE') {
+        prefetchSpeechItem(item);
       }
     });
     void playNextSpeech();
-  }, [state.messages, voiceEnabled]);
+  }, [activeMessages, voiceEnabled, voiceMode, state.mode]);
 
-  const beginRecording = async () => {
-    if (!supportsRecording || isRecording || isTranscribing) return;
+  const startRecording = async () => {
+    if (!supportsRecording || isRecording || isTranscribing || voiceMode) return;
     setVoiceError(null);
     stopSpeech();
     if (state.mode === 'ROUND_TABLE' && state.roundTable.isOrchestrating) {
@@ -269,7 +753,10 @@ export default function InteractionPanel() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const preferredMimeType = pickAudioMimeType();
+      const recorder = preferredMimeType
+        ? new MediaRecorder(stream, { mimeType: preferredMimeType })
+        : new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
       audioChunksRef.current = [];
 
@@ -280,9 +767,11 @@ export default function InteractionPanel() {
       };
 
       recorder.onstop = async () => {
+        setIsRecording(false);
         const chunks = audioChunksRef.current;
         audioChunksRef.current = [];
-        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        const blobType = recorder.mimeType || preferredMimeType || 'audio/webm';
+        const blob = new Blob(chunks, { type: blobType });
         mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
         mediaStreamRef.current = null;
         mediaRecorderRef.current = null;
@@ -293,7 +782,8 @@ export default function InteractionPanel() {
         setIsTranscribing(true);
         try {
           const formData = new FormData();
-          formData.append('audio', blob, 'speech.webm');
+          const extension = getAudioExtension(blob.type || blobType);
+          formData.append('audio', blob, `speech.${extension}`);
           const response = await fetch(`${API_BASE}/api/transcribe`, {
             method: 'POST',
             body: formData
@@ -325,6 +815,7 @@ export default function InteractionPanel() {
 
   const endRecording = () => {
     if (!mediaRecorderRef.current) {
+      setIsRecording(false);
       return;
     }
     if (mediaRecorderRef.current.state !== 'inactive') {
@@ -337,7 +828,34 @@ export default function InteractionPanel() {
     if (!panelOpen && isRecording) {
       endRecording();
     }
-  }, [panelOpen, isRecording]);
+  }, [panelOpen, voiceMode, isRecording]);
+
+  useEffect(() => {
+    if (!voiceMode) {
+      disconnectRealtime();
+      return;
+    }
+    if (!supportsVoiceMode) {
+      setVoiceError('Voice mode is not supported in this browser.');
+      actions.setVoiceMode(false);
+      return;
+    }
+    void connectRealtime();
+    return () => {
+      disconnectRealtime();
+    };
+  }, [voiceMode, supportsVoiceMode, state.anchor?.id, state.mode]);
+
+  useEffect(() => {
+    if (!voiceMode || state.mode !== 'ROUND_TABLE') {
+      return;
+    }
+    if (state.roundTable.isOrchestrating) {
+      setVoiceStatus('responding');
+    } else if (voiceStatus !== 'connecting') {
+      setVoiceStatus('listening');
+    }
+  }, [voiceMode, state.mode, state.roundTable.isOrchestrating, voiceStatus]);
 
   const handleRoundTableClick = () => {
     if (!anchor) {
@@ -364,7 +882,62 @@ export default function InteractionPanel() {
 
   return (
     <>
-      {!panelOpen && (
+      {voiceMode && (
+        <div className="fixed bottom-24 right-4 z-50 w-[min(92vw,260px)] rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-4 text-[var(--text)] shadow-xl backdrop-blur-lg">
+          <p className="text-[11px] uppercase tracking-[0.3em] text-[var(--text-muted)]">
+            Voice mode
+          </p>
+          <p className="mt-2 text-sm font-semibold">
+            {voiceStatus === 'connecting'
+              ? 'Connecting...'
+              : voiceStatus === 'responding'
+                ? 'Responding...'
+                : voiceStatus === 'listening'
+                  ? 'Listening...'
+                  : 'Idle'}
+          </p>
+          <p className="mt-1 text-xs text-[var(--text-muted)]">
+            {voiceEnabled ? 'TTS playback on.' : 'TTS playback off.'}
+          </p>
+          {voiceInputTranscript && (
+            <p className="mt-3 text-xs text-[var(--text-muted)]">
+              <span className="font-semibold text-[var(--text)]">You:</span> {voiceInputTranscript}
+            </p>
+          )}
+          {voiceOutputTranscript && (
+            <p className="mt-2 text-xs text-[var(--text-muted)]">
+              <span className="font-semibold text-[var(--text)]">
+                {state.mode === 'ROUND_TABLE' ? 'Panel' : 'Mentor'}:
+              </span>{' '}
+              {voiceOutputTranscript}
+            </p>
+          )}
+          {audioUnlockRequired && (
+            <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800">
+              <p>Audio playback is blocked by the browser.</p>
+              <button
+                type="button"
+                onClick={handleAudioUnlock}
+                className="mt-2 rounded-full border border-amber-500/50 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:opacity-80"
+              >
+                Enable audio
+              </button>
+            </div>
+          )}
+          {voiceError && (
+            <p className="mt-2 text-xs text-rose-600">{voiceError}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => actions.setVoiceMode(false)}
+            className="mt-3 w-full rounded-full border border-[var(--panel-border)] px-3 py-1 text-xs font-semibold text-[var(--text)] transition hover:opacity-80"
+          >
+            Exit voice mode
+          </button>
+        </div>
+      )}
+
+      {!panelOpen && !voiceMode && (
         <button
           type="button"
           onClick={() => actions.setMode('MENTOR')}
@@ -391,6 +964,20 @@ export default function InteractionPanel() {
               }`}
             >
               Voice {voiceEnabled ? 'On' : 'Off'}
+            </button>
+            <button
+              type="button"
+              onClick={() => actions.setVoiceMode(!voiceMode)}
+              disabled={!supportsVoiceMode}
+              className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                !supportsVoiceMode
+                  ? 'border-[var(--panel-border)] text-[var(--text-muted)] opacity-60'
+                  : voiceMode
+                    ? 'border-sky-500/70 bg-sky-500/20 text-sky-700'
+                    : 'border-sky-500/60 bg-sky-500/10 text-sky-600'
+              }`}
+            >
+              {voiceMode ? 'Voice Mode On' : 'Voice Mode'}
             </button>
             <ModeToggle
               label="Mentor"
@@ -430,11 +1017,41 @@ export default function InteractionPanel() {
                 <p className="mt-2 text-xs text-[var(--text-muted)]">
                   {anchor.chapterSummary}
                 </p>
+                {conversationIndexEntries.length > 0 && (
+                  <div className="mt-4 border-t border-[var(--panel-border)] pt-3">
+                    <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+                      Prior Anchors
+                    </p>
+                    <div className="mt-2 space-y-2 text-xs text-[var(--text-muted)]">
+                      {conversationIndexEntries.map((entry) => (
+                        <div key={entry.anchorId}>
+                          <p className="text-[var(--text)]">{entry.anchorSnippet}</p>
+                          {entry.lastUserMessage && (
+                            <p className="mt-1">You: {entry.lastUserMessage}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <p className="mt-2 text-xs text-[var(--text-muted)]">{emptyState}</p>
             )}
           </div>
+
+          {!voiceMode && audioUnlockRequired && (
+            <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800">
+              <p>Audio playback is blocked by the browser.</p>
+              <button
+                type="button"
+                onClick={handleAudioUnlock}
+                className="mt-2 rounded-full border border-amber-500/50 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:opacity-80"
+              >
+                Enable audio
+              </button>
+            </div>
+          )}
 
           {state.mode === 'ROUND_TABLE' && (
             <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-4">
@@ -451,7 +1068,7 @@ export default function InteractionPanel() {
                   <div
                     key={persona}
                     className={`flex h-8 w-8 items-center justify-center rounded-full bg-[var(--panel)] text-xs font-semibold ring-1 ${PERSONA_STYLES[persona].ring}`}
-                    title={PERSONA_STYLES[persona].label}
+                    title={`${PERSONA_DISPLAY[persona].name} (${PERSONA_DISPLAY[persona].role})`}
                   >
                     {PERSONA_STYLES[persona].avatar}
                   </div>
@@ -461,12 +1078,12 @@ export default function InteractionPanel() {
           )}
 
           <div className="space-y-3">
-            {state.messages.length === 0 && (
+            {activeMessages.length === 0 && (
               <div className="rounded-2xl border border-dashed border-[var(--panel-border)] p-4 text-xs text-[var(--text-muted)]">
                 Ask a question, or tap a paragraph to seed the mentor.
               </div>
             )}
-            {state.messages.map((message) => (
+            {activeMessages.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}
           </div>
@@ -477,7 +1094,7 @@ export default function InteractionPanel() {
             </div>
           )}
 
-          {voiceError && (
+          {voiceError && !voiceMode && (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-700">
               {voiceError}
             </div>
@@ -542,12 +1159,12 @@ export default function InteractionPanel() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  disabled={!supportsRecording || isTranscribing}
-                  onPointerDown={beginRecording}
+                  disabled={!supportsRecording || isTranscribing || voiceMode}
+                  onPointerDown={startRecording}
                   onPointerUp={endRecording}
                   onPointerLeave={endRecording}
                   className={`rounded-full border px-3 py-1 font-semibold transition ${
-                    !supportsRecording || isTranscribing
+                    !supportsRecording || isTranscribing || voiceMode
                       ? 'border-[var(--panel-border)] text-[var(--text-muted)]'
                       : isRecording
                         ? 'border-rose-500/60 bg-rose-500/10 text-rose-600 animate-pulse'

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { MouseEvent, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import content from '../../content/poor_charlie_almanack.md?raw';
 import { useInteraction } from '../../context/InteractionContext';
@@ -85,8 +85,20 @@ export default function RenderedView() {
     };
   }, []);
 
+  const handleContainerClick = (event: MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    const paragraph = target.closest('[data-anchor-id]');
+    if (paragraph) return;
+    actions.clearAnchor();
+  };
+
   return (
-    <div className="reader-prose prose prose-lg max-w-none" ref={containerRef}>
+    <div
+      className="reader-prose prose prose-lg max-w-none"
+      ref={containerRef}
+      onClick={handleContainerClick}
+    >
       <ReactMarkdown
         components={{
           p: ({ node, children }) => {
@@ -112,10 +124,21 @@ export default function RenderedView() {
                 data-anchor-id={id}
                 role="button"
                 tabIndex={0}
-                onClick={() => actions.setAnchor(id, text)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (isActive) {
+                    actions.clearAnchor();
+                    return;
+                  }
+                  actions.setAnchor(id, text);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
+                    if (isActive) {
+                      actions.clearAnchor();
+                      return;
+                    }
                     actions.setAnchor(id, text);
                   }
                 }}
