@@ -8,6 +8,8 @@ import {
   PERSONA_DISPLAY,
   useInteraction
 } from '../../context/InteractionContext';
+import { stripSectionMarkers } from '../../utils/parseStructuredResponse';
+import StructuredCard from './StructuredCard';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -97,10 +99,10 @@ const PERSONA_PREFIX_PATTERN = new RegExp(
 );
 
 function sanitizeSpeechText(text: string, mode: InteractionMode) {
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  if (mode !== 'ROUND_TABLE') return trimmed;
-  return trimmed.replace(PERSONA_PREFIX_PATTERN, '').trim();
+  let cleaned = stripSectionMarkers(text);
+  if (!cleaned) return '';
+  if (mode !== 'ROUND_TABLE') return cleaned;
+  return cleaned.replace(PERSONA_PREFIX_PATTERN, '').trim();
 }
 
 type SpeechQueueItem = {
@@ -145,10 +147,14 @@ function MessageBubble({ message }: { message: Message }) {
             <span className={personaStyle.accent}>{personaStyle.label}</span>
           </div>
         )}
-        <div className="whitespace-pre-wrap leading-relaxed">
-          {message.content}
-          {message.status === 'typing' && !message.content && <TypingDots />}
-        </div>
+        {message.role !== 'user' && message.status === 'done' ? (
+          <StructuredCard content={message.content} persona={message.persona} />
+        ) : (
+          <div className="whitespace-pre-wrap leading-relaxed">
+            {message.content}
+            {message.status === 'typing' && !message.content && <TypingDots />}
+          </div>
+        )}
       </div>
     </div>
   );
