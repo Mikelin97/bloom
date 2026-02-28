@@ -5,12 +5,16 @@ import MainContainer from '../components/Layout/MainContainer';
 import ThemeWrapper from '../components/Layout/ThemeWrapper';
 import RenderedView from '../components/Reader/RenderedView';
 import { useReader } from '../context/ReaderContext';
+import { useInteraction } from '../context/InteractionContext';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function Dashboard() {
   const { state, dispatch } = useReader();
+  const { state: interactionState } = useInteraction();
   const { signOutUser } = useAuth();
   const restoredContentRef = useRef<string | null>(null);
+
+  const panelOpen = interactionState.mode !== 'IDLE' && !interactionState.voiceMode;
 
   useEffect(() => {
     let ticking = false;
@@ -42,7 +46,7 @@ export default function Dashboard() {
 
   return (
     <ThemeWrapper>
-      <MainContainer>
+      <MainContainer className={panelOpen ? 'md:mr-[490px] md:ml-16' : ''}>
         <div className="mb-4 flex justify-end">
           <button
             type="button"

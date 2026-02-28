@@ -59,8 +59,8 @@ function SectionRow({
 }) {
   const accent = ACCENT[persona];
   return (
-    <div className={`px-3 py-2.5 ${isReflect ? `${accent.reflectBg} rounded-b-xl` : ''}`}>
-      <div className="mb-0.5 flex items-center gap-1.5">
+    <div className={`px-2.5 py-2 ${isReflect ? `${accent.reflectBg} rounded-b-xl` : ''}`}>
+      <div className="mb-0.5 flex items-center gap-1">
         <span className={`text-xs ${accent.icon}`} aria-hidden>
           {iconForLabel(section.label)}
         </span>
@@ -69,7 +69,7 @@ function SectionRow({
         </span>
       </div>
       <p
-        className={`text-sm leading-relaxed text-[var(--text)] ${isReflect ? 'italic' : ''}`}
+        className={`text-[13px] leading-snug text-[var(--text)] ${isReflect ? 'italic' : ''}`}
       >
         {section.text}
       </p>
