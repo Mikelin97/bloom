@@ -1,7 +1,8 @@
 import { MouseEvent, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
-import content from '../../content/poor_charlie_almanack.md?raw';
+import { getReaderContentById } from '../../content/library';
 import { useInteraction } from '../../context/InteractionContext';
+import { useReader } from '../../context/ReaderContext';
 
 function nodeToText(node: any): string {
   if (!node) return '';
@@ -13,8 +14,10 @@ function nodeToText(node: any): string {
 }
 
 export default function RenderedView() {
+  const { state: readerState } = useReader();
   const { state, actions } = useInteraction();
   const activeAnchorId = state.anchor?.id;
+  const activeContent = getReaderContentById(readerState.settings.contentId);
   let paragraphIndex = 0;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const paragraphRefs = useRef<Map<string, HTMLParagraphElement>>(new Map());
@@ -73,6 +76,7 @@ export default function RenderedView() {
       { root: null, threshold: [0, 0.25, 0.6] }
     );
 
+    visibleIds.current.clear();
     paragraphRefs.current.forEach((element) => observer.observe(element));
     scheduleUpdate();
 
@@ -83,7 +87,7 @@ export default function RenderedView() {
         rafId.current = null;
       }
     };
-  }, []);
+  }, [activeContent.id]);
 
   const handleContainerClick = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
@@ -154,7 +158,7 @@ export default function RenderedView() {
           }
         }}
       >
-        {content}
+        {activeContent.markdown}
       </ReactMarkdown>
     </div>
   );

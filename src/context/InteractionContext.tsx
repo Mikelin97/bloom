@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { getReaderContentById } from '../content/library';
+import { useReader } from './ReaderContext';
 
 export type InteractionMode = 'IDLE' | 'MENTOR' | 'ROUND_TABLE';
 export type Persona = 'mentor' | 'skeptic' | 'historian' | 'pragmatist';
@@ -83,14 +85,6 @@ const InteractionContext = createContext<InteractionContextValue | undefined>(un
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const MAX_HISTORY = 8;
 
-const BOOK_META = {
-  bookTitle: "Poor Charlie's Almanack",
-  author: 'Charles T. Munger',
-  chapterTitle: 'Praising Old Age',
-  chapterSummary:
-    "Reflections on Cicero's praise of old age and the enduring influence of ideas across time."
-};
-
 const PERSONA_ORDER: Persona[] = ['skeptic', 'historian', 'pragmatist'];
 
 function createId() {
@@ -100,11 +94,26 @@ function createId() {
   return `id_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
-function buildAnchor(text: string, id: string): AnchorContext {
+function buildAnchor(
+  text: string,
+  id: string,
+  meta: Pick<AnchorContext, 'bookTitle' | 'author' | 'chapterTitle' | 'chapterSummary'>
+): AnchorContext {
   return {
     id,
     text,
-    ...BOOK_META
+    ...meta
+  };
+}
+
+function resetRoundTableState(roundTable: RoundTableState): RoundTableState {
+  return {
+    ...roundTable,
+    sessionId: null,
+    turnCount: 0,
+    isOrchestrating: false,
+    awaitingUser: false,
+    nextPersonaIndex: 0
   };
 }
 
@@ -212,6 +221,14 @@ export function buildConversationIndexText(params: {
 }
 
 export function InteractionProvider({ children }: { children: React.ReactNode }) {
+  const { state: readerState } = useReader();
+  const activeContent = getReaderContentById(readerState.settings.contentId);
+  const activeBookMeta = {
+    bookTitle: activeContent.bookTitle,
+    author: activeContent.author,
+    chapterTitle: activeContent.chapterTitle,
+    chapterSummary: activeContent.chapterSummary
+  };
   const [state, setState] = useState<InteractionState>({
     mode: 'IDLE',
     anchor: null,
@@ -229,6 +246,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
     }
   });
 
+  const previousContentIdRef = useRef(activeContent.id);
   const stateRef = useRef(state);
   const activeAbort = useRef<AbortController | null>(null);
 
@@ -255,6 +273,24 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
       activeAbort.current = null;
     }
   };
+
+  useEffect(() => {
+    if (previousContentIdRef.current === activeContent.id) {
+      return;
+    }
+    previousContentIdRef.current = activeContent.id;
+    cancelActiveStream();
+    setState((prev) => ({
+      ...prev,
+      mode: 'IDLE',
+      anchor: null,
+      anchors: {},
+      messages: [],
+      viewportText: '',
+      voiceMode: false,
+      roundTable: resetRoundTableState(prev.roundTable)
+    }));
+  }, [activeContent.id]);
 
   const streamFromApi = async ({
     endpoint,
@@ -383,20 +419,13 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
 
   const setAnchor = (id: string, text: string) => {
     cancelActiveStream();
-    const anchor = buildAnchor(text, id);
+    const anchor = buildAnchor(text, id, activeBookMeta);
     setState((prev) => ({
       ...prev,
       anchor,
       anchors: { ...prev.anchors, [id]: anchor },
       mode: 'MENTOR',
-      roundTable: {
-        ...prev.roundTable,
-        sessionId: null,
-        turnCount: 0,
-        isOrchestrating: false,
-        awaitingUser: false,
-        nextPersonaIndex: 0
-      }
+      roundTable: resetRoundTableState(prev.roundTable)
     }));
   };
 
@@ -407,14 +436,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
       anchor: null,
       mode: 'IDLE',
       voiceMode: false,
-      roundTable: {
-        ...prev.roundTable,
-        sessionId: null,
-        turnCount: 0,
-        isOrchestrating: false,
-        awaitingUser: false,
-        nextPersonaIndex: 0
-      }
+      roundTable: resetRoundTableState(prev.roundTable)
     }));
   };
 
@@ -653,7 +675,7 @@ export function InteractionProvider({ children }: { children: React.ReactNode })
       ...prev,
       anchors: {},
       messages: [],
-      roundTable: { ...prev.roundTable, sessionId: null, turnCount: 0, awaitingUser: false }
+      roundTable: resetRoundTableState(prev.roundTable)
     }));
   };
 

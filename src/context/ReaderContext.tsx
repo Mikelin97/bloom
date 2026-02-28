@@ -1,4 +1,9 @@
 import React, { createContext, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
+import {
+  DEFAULT_READER_CONTENT_ID,
+  type ReaderContentId,
+  isReaderContentId
+} from '../content/library';
 
 export type ThemeMode = 'light' | 'dark' | 'sepia';
 export type FontFamily = 'serif' | 'sans' | 'mono';
@@ -9,6 +14,7 @@ export interface AppState {
     fontFamily: FontFamily;
     fontSizeStep: number;
     scrollPosition: number;
+    contentId: ReaderContentId;
   };
 }
 
@@ -16,6 +22,7 @@ type Action =
   | { type: 'SET_THEME'; value: ThemeMode }
   | { type: 'SET_FONT_FAMILY'; value: FontFamily }
   | { type: 'SET_FONT_SIZE'; value: number }
+  | { type: 'SET_CONTENT'; value: ReaderContentId }
   | { type: 'SET_SCROLL_POSITION'; value: number };
 
 interface ReaderContextValue {
@@ -30,7 +37,8 @@ const defaultState: AppState = {
     theme: 'light',
     fontFamily: 'serif',
     fontSizeStep: 3,
-    scrollPosition: 0
+    scrollPosition: 0,
+    contentId: DEFAULT_READER_CONTENT_ID
   }
 };
 
@@ -49,6 +57,14 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         settings: { ...state.settings, fontSizeStep: clamp(action.value, 1, 5) }
       };
+    case 'SET_CONTENT':
+      if (state.settings.contentId === action.value) {
+        return state;
+      }
+      return {
+        ...state,
+        settings: { ...state.settings, contentId: action.value, scrollPosition: 0 }
+      };
     case 'SET_SCROLL_POSITION':
       return { ...state, settings: { ...state.settings, scrollPosition: action.value } };
     default:
@@ -66,12 +82,20 @@ function loadInitialState(): AppState {
     if (!raw) {
       return defaultState;
     }
-    const parsed = JSON.parse(raw) as { settings?: Partial<AppState['settings']> };
+    const parsed = JSON.parse(raw) as {
+      settings?: Partial<AppState['settings']> & { contentId?: unknown };
+    };
+    const parsedSettings = parsed.settings ?? {};
+    const { contentId: parsedContentId, ...restSettings } = parsedSettings;
+    const contentId = isReaderContentId(parsedContentId)
+      ? parsedContentId
+      : DEFAULT_READER_CONTENT_ID;
     return {
       ...defaultState,
       settings: {
         ...defaultState.settings,
-        ...parsed.settings
+        ...restSettings,
+        contentId
       }
     };
   } catch {

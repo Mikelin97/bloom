@@ -10,7 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 export default function Dashboard() {
   const { state, dispatch } = useReader();
   const { signOutUser } = useAuth();
-  const restoredRef = useRef(false);
+  const restoredContentRef = useRef<string | null>(null);
 
   useEffect(() => {
     let ticking = false;
@@ -30,15 +30,15 @@ export default function Dashboard() {
   }, [dispatch]);
 
   useEffect(() => {
-    if (restoredRef.current) {
+    if (restoredContentRef.current === state.settings.contentId) {
       return;
     }
-    restoredRef.current = true;
+    restoredContentRef.current = state.settings.contentId;
     const targetPosition = state.settings.scrollPosition;
     window.requestAnimationFrame(() => {
       window.scrollTo(0, targetPosition);
     });
-  }, [state.settings.scrollPosition]);
+  }, [state.settings.contentId, state.settings.scrollPosition]);
 
   return (
     <ThemeWrapper>
