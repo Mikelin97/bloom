@@ -6,7 +6,6 @@ dist/
 
 # local env files
 .env
-.env.*
 
 # logs
 npm-debug.log*
@@ -20,9 +19,6 @@ pnpm-debug.log*
 # TypeScript build info
 *.tsbuildinfo
 
-<<<<<<< HEAD
 *.pem
-=======
 
 coverage
->>>>>>> bloom/main
