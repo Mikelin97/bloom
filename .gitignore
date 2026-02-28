@@ -20,4 +20,9 @@ pnpm-debug.log*
 # TypeScript build info
 *.tsbuildinfo
 
+<<<<<<< HEAD
 *.pem
+=======
+
+coverage
+>>>>>>> bloom/main
