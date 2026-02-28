@@ -18,7 +18,8 @@ const PERSONA_STYLES: Record<
   mentor: {
     label: PERSONA_DISPLAY.mentor.name,
     accent: 'text-emerald-500',
-    bubble: 'bg-emerald-500/10 border-emerald-500/30',
+    bubble:
+      'border-emerald-500/35 bg-gradient-to-br from-emerald-500/15 via-emerald-500/5 to-transparent shadow-[0_10px_28px_-24px_rgba(16,185,129,0.95)]',
     ring: 'ring-emerald-500/30',
     avatar: PERSONA_DISPLAY.mentor.name.slice(0, 1)
   },
@@ -153,33 +154,6 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
-function ModeToggle({
-  label,
-  active,
-  onClick,
-  disabled
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
-        active
-          ? 'border-[var(--text)] bg-[var(--text)] text-[var(--bg)]'
-          : 'border-[var(--panel-border)] text-[var(--text)] opacity-70 hover:opacity-100'
-      } ${disabled ? 'cursor-not-allowed opacity-40' : ''}`}
-    >
-      {label}
-    </button>
-  );
-}
-
 export default function InteractionPanel() {
   const { state, actions } = useInteraction();
   const [draft, setDraft] = useState('');
@@ -252,6 +226,12 @@ export default function InteractionPanel() {
   }, [state]);
 
   useEffect(() => {
+    if (state.mode === 'ROUND_TABLE') {
+      actions.setMode('MENTOR');
+    }
+  }, [state.mode]);
+
+  useEffect(() => {
     audioUnlockRef.current = audioUnlockRequired;
   }, [audioUnlockRequired]);
 
@@ -297,9 +277,6 @@ export default function InteractionPanel() {
     event.preventDefault();
     const text = draft.trim();
     if (!text) return;
-    if (state.mode === 'ROUND_TABLE' && state.roundTable.isOrchestrating) {
-      actions.raiseHand();
-    }
     actions.sendMessage(text);
     setDraft('');
   };
@@ -747,9 +724,6 @@ export default function InteractionPanel() {
     if (!supportsRecording || isRecording || isTranscribing || voiceMode) return;
     setVoiceError(null);
     stopSpeech();
-    if (state.mode === 'ROUND_TABLE' && state.roundTable.isOrchestrating) {
-      actions.raiseHand();
-    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
@@ -857,28 +831,12 @@ export default function InteractionPanel() {
     }
   }, [voiceMode, state.mode, state.roundTable.isOrchestrating, voiceStatus]);
 
-  const handleRoundTableClick = () => {
-    if (!anchor) {
-      return;
-    }
-    if (state.mode === 'ROUND_TABLE') {
-      actions.setMode('ROUND_TABLE');
-      return;
-    }
-    actions.inviteRoundTable();
-  };
-
-  const hasRoundTable = state.roundTable.sessionId !== null;
-
-  const panelClass = `fixed right-3 top-3 bottom-3 z-50 flex w-[min(94vw,380px)] flex-col rounded-3xl border border-[var(--panel-border)] bg-[var(--panel)] shadow-2xl backdrop-blur-xl transition-all duration-300 ${
+  const panelClass = `fixed right-3 top-3 bottom-3 z-50 flex w-[min(94vw,390px)] flex-col rounded-3xl border border-[var(--panel-border)] bg-[var(--panel)] shadow-2xl backdrop-blur-xl transition-all duration-300 ${
     panelOpen ? 'translate-x-0 opacity-100' : 'translate-x-[110%] opacity-0 pointer-events-none'
   }`;
 
   const emptyState =
-    'Select a paragraph to anchor the conversation. Each highlighted passage becomes a precise context window.';
-
-  const activeModeLabel: InteractionMode =
-    state.mode === 'IDLE' ? 'MENTOR' : state.mode;
+    'Select a paragraph to anchor the conversation, then ask Catherine for interpretation, context, or critique.';
 
   return (
     <>
@@ -906,9 +864,7 @@ export default function InteractionPanel() {
           )}
           {voiceOutputTranscript && (
             <p className="mt-2 text-xs text-[var(--text-muted)]">
-              <span className="font-semibold text-[var(--text)]">
-                {state.mode === 'ROUND_TABLE' ? 'Panel' : 'Mentor'}:
-              </span>{' '}
+              <span className="font-semibold text-[var(--text)]">Mentor:</span>{' '}
               {voiceOutputTranscript}
             </p>
           )}
@@ -941,19 +897,31 @@ export default function InteractionPanel() {
         <button
           type="button"
           onClick={() => actions.setMode('MENTOR')}
-          className="fixed bottom-20 right-4 z-40 rounded-full border border-[var(--panel-border)] bg-[var(--panel)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text)] shadow-lg backdrop-blur-md transition hover:-translate-y-0.5"
+          className="fixed bottom-20 right-4 z-40 rounded-full border border-emerald-500/35 bg-emerald-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-emerald-600 shadow-lg backdrop-blur-md transition hover:-translate-y-0.5"
         >
           Mentor
         </button>
       )}
 
       <section className={panelClass} aria-live="polite">
-        <header className="flex items-center justify-between border-b border-[var(--panel-border)] px-5 py-4">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.3em] text-[var(--text-muted)]">Mode</p>
-            <p className="text-lg font-semibold text-[var(--text)]">{activeModeLabel}</p>
+        <header className="flex items-start justify-between border-b border-[var(--panel-border)] bg-[var(--panel)] px-5 py-4">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/15 text-xs font-semibold text-emerald-600">
+              {PERSONA_STYLES.mentor.avatar}
+            </span>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.3em] text-[var(--text-muted)]">
+                Mentor Mode
+              </p>
+              <p className="mt-1 text-lg font-semibold text-[var(--text)]">{PERSONA_STYLES.mentor.label}</p>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {anchor
+                  ? 'Anchored to your selected passage.'
+                  : 'Select a highlighted paragraph to ground the reply.'}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pt-0.5">
             <button
               type="button"
               onClick={() => setVoiceEnabled((prev) => !prev)}
@@ -979,17 +947,6 @@ export default function InteractionPanel() {
             >
               {voiceMode ? 'Voice Mode On' : 'Voice Mode'}
             </button>
-            <ModeToggle
-              label="Mentor"
-              active={state.mode === 'MENTOR'}
-              onClick={() => actions.setMode('MENTOR')}
-            />
-            <ModeToggle
-              label="Round-Table"
-              active={state.mode === 'ROUND_TABLE'}
-              onClick={handleRoundTableClick}
-              disabled={!anchor}
-            />
             <button
               type="button"
               onClick={() => actions.setMode('IDLE')}
@@ -1002,7 +959,7 @@ export default function InteractionPanel() {
         </header>
 
         <div className="no-scrollbar flex-1 space-y-4 overflow-y-auto px-5 py-4" ref={scrollRef}>
-          <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-4 text-sm text-[var(--text)]">
+          <div className="rounded-2xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/10 via-transparent to-transparent p-4 text-sm text-[var(--text)]">
             <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
               Active Anchor
             </p>
@@ -1012,7 +969,7 @@ export default function InteractionPanel() {
                   {anchor.text}
                 </p>
                 <div className="mt-3 text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
-                  {anchor.bookTitle} - {anchor.chapterTitle}
+                  {anchor.bookTitle} | {anchor.chapterTitle}
                 </div>
                 <p className="mt-2 text-xs text-[var(--text-muted)]">
                   {anchor.chapterSummary}
@@ -1053,46 +1010,16 @@ export default function InteractionPanel() {
             </div>
           )}
 
-          {state.mode === 'ROUND_TABLE' && (
-            <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
-                  Participants
-                </p>
-                <span className="text-xs text-[var(--text-muted)]">
-                  Turn {state.roundTable.turnCount}/{state.roundTable.maxTurnsBeforePause}
-                </span>
-              </div>
-              <div className="mt-3 flex items-center gap-2">
-                {(['mentor', 'skeptic', 'historian', 'pragmatist'] as Persona[]).map((persona) => (
-                  <div
-                    key={persona}
-                    className={`flex h-8 w-8 items-center justify-center rounded-full bg-[var(--panel)] text-xs font-semibold ring-1 ${PERSONA_STYLES[persona].ring}`}
-                    title={`${PERSONA_DISPLAY[persona].name} (${PERSONA_DISPLAY[persona].role})`}
-                  >
-                    {PERSONA_STYLES[persona].avatar}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           <div className="space-y-3">
             {activeMessages.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-[var(--panel-border)] p-4 text-xs text-[var(--text-muted)]">
-                Ask a question, or tap a paragraph to seed the mentor.
+              <div className="rounded-2xl border border-dashed border-[var(--panel-border)] bg-[var(--panel)] p-4 text-xs text-[var(--text-muted)]">
+                Ask Catherine for interpretation, challenge the argument, or connect this idea to another passage.
               </div>
             )}
             {activeMessages.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}
           </div>
-
-          {state.mode === 'ROUND_TABLE' && state.roundTable.awaitingUser && (
-            <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800">
-              The panel is paused - add your take to continue.
-            </div>
-          )}
 
           {voiceError && !voiceMode && (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-700">
@@ -1105,58 +1032,19 @@ export default function InteractionPanel() {
           onSubmit={handleSubmit}
           className="border-t border-[var(--panel-border)] px-5 py-4"
         >
-          <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-3">
+          <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-3 shadow-sm">
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               rows={3}
-              placeholder={
-                state.mode === 'ROUND_TABLE'
-                  ? 'Share your take or question the panel...'
-                  : 'Ask the mentor about this passage...'
-              }
+              placeholder="Ask the mentor about this passage..."
               className="w-full resize-none bg-transparent text-sm text-[var(--text)] outline-none placeholder:text-[var(--text-muted)]"
             />
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2">
-                {state.mode === 'MENTOR' && (
-                  <button
-                    type="button"
-                    onClick={actions.inviteRoundTable}
-                    disabled={!anchor}
-                    className={`rounded-full border px-3 py-1 transition ${
-                      anchor
-                        ? 'border-[var(--text)] text-[var(--text)]'
-                        : 'border-[var(--panel-border)] text-[var(--text-muted)]'
-                    }`}
-                  >
-                    Invite panel
-                  </button>
-                )}
-                {state.mode === 'ROUND_TABLE' && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => actions.continueRoundTable()}
-                      disabled={state.roundTable.isOrchestrating}
-                      className="rounded-full border border-[var(--text)] px-3 py-1 text-[var(--text)] transition disabled:opacity-50"
-                    >
-                      {hasRoundTable ? 'Continue' : 'Start'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        stopSpeech();
-                        actions.raiseHand();
-                      }}
-                      className="rounded-full border border-[var(--panel-border)] px-3 py-1 text-[var(--text)] transition"
-                    >
-                      Raise hand
-                    </button>
-                  </>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+                {anchor ? 'Grounded response enabled' : 'General response mode'}
+              </p>
+              <div className="ml-auto flex items-center gap-2">
                 <button
                   type="button"
                   disabled={!supportsRecording || isTranscribing || voiceMode}
