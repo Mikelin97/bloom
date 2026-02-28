@@ -99,6 +99,8 @@ src/
     Reader/
   content/
     poor_charlie_almanack.md
+    thus_spoke_zarathustra.md
+    library.ts
   context/
     InteractionContext.tsx
     ReaderContext.tsx
@@ -108,7 +110,7 @@ src/
 ```
 
 ## Notes
-- The reader content is currently sourced from `src/content/poor_charlie_almanack.md`.
+- Reader content is configured in `src/content/library.ts` and selected from the in-app controls.
 - Fonts are loaded via Google Fonts in `index.html` with `display=swap` to minimize layout shift.
 - The API server runs on `http://localhost:8787` by default. Vite proxies `/api` to it in `vite.config.ts`.
 

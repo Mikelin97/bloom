@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { READER_CONTENTS, isReaderContentId } from '../../content/library';
 import { useReader } from '../../context/ReaderContext';
 
 const THEMES = [
@@ -16,6 +17,10 @@ const FONTS = [
 export default function SettingsBar() {
   const { state, dispatch } = useReader();
   const [open, setOpen] = useState(false);
+  const handleContentChange = (value: string) => {
+    if (!isReaderContentId(value)) return;
+    dispatch({ type: 'SET_CONTENT', value });
+  };
 
   return (
     <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end md:top-4 md:bottom-auto">
@@ -31,6 +36,24 @@ export default function SettingsBar() {
 
       {open && (
         <div className="mt-3 w-64 space-y-4 rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-4 text-sm text-[var(--text)] shadow-lg backdrop-blur-md">
+          <div className="space-y-2">
+            <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--text)] opacity-70">
+              Text
+            </span>
+            <select
+              className="w-full rounded-xl border border-[var(--panel-border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text)] outline-none focus:border-[var(--text-muted)]"
+              value={state.settings.contentId}
+              onChange={(event) => handleContentChange(event.target.value)}
+              aria-label="Select reading text"
+            >
+              {READER_CONTENTS.map((content) => (
+                <option key={content.id} value={content.id}>
+                  {content.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="flex items-center justify-between">
             <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--text)] opacity-70">
               Theme

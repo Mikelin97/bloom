@@ -8,7 +8,8 @@ import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import OpenAI from 'openai';
-import { MENTOR_SYSTEM_PROMPT, PERSONA_PROMPTS } from './prompts.js';
+import { MENTOR_SYSTEM_PROMPT, MENTOR_PROMPTS, PERSONA_PROMPTS } from './prompts.js';
+import { classifyTurn } from './classify.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 8787;
@@ -174,11 +175,15 @@ app.post('/api/mentor', async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
     const { messages, anchor, viewportText, conversationIndex } = req.body ?? {};
+    const normalized = normalizeMessages(messages);
+    const lastUserMsg = [...normalized].reverse().find((m) => m.role === 'user')?.content || '';
+    const turnType = classifyTurn(lastUserMsg, normalized.length);
+    const systemPrompt = MENTOR_PROMPTS[turnType] || MENTOR_PROMPTS.explain;
     const context = buildContext(anchor, viewportText, conversationIndex);
     const input = [
-      { role: 'system', content: MENTOR_SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       { role: 'developer', content: context },
-      ...normalizeMessages(messages)
+      ...normalized
     ];
     await streamResponse(res, { input, temperature: 0.4 });
   } catch (error) {
@@ -190,12 +195,16 @@ app.post('/api/roundtable', async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
     const { persona, messages, anchor, viewportText, conversationIndex } = req.body ?? {};
-    const prompt = PERSONA_PROMPTS[persona] || PERSONA_PROMPTS.skeptic;
+    const normalized = normalizeMessages(messages);
+    const lastUserMsg = [...normalized].reverse().find((m) => m.role === 'user')?.content || '';
+    const turnType = classifyTurn(lastUserMsg, normalized.length);
+    const personaSet = PERSONA_PROMPTS[persona] || PERSONA_PROMPTS.skeptic;
+    const prompt = turnType === 'explain' ? personaSet.explain : personaSet.conversational;
     const context = buildContext(anchor, viewportText, conversationIndex);
     const input = [
       { role: 'system', content: prompt },
       { role: 'developer', content: context },
-      ...normalizeMessages(messages)
+      ...normalized
     ];
     await streamResponse(res, { input, temperature: 0.7 });
   } catch (error) {
