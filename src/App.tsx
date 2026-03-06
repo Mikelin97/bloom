@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard';
 import JoinRoomInvite from './pages/JoinRoomInvite';
 import Login from './pages/Login';
 import Onboarding from './pages/Onboarding';
+import Pricing from './pages/Pricing';
 import ReadingRoom from './pages/ReadingRoom';
 import RoomsLobby from './pages/RoomsLobby';
 
@@ -63,6 +64,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Dashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/pricing"
+        element={
+          <ProtectedRoute>
+            <Pricing />
           </ProtectedRoute>
         }
       />

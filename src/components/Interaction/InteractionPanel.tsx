@@ -7,6 +7,7 @@ import {
   PERSONA_DISPLAY,
   useInteraction
 } from '../../context/InteractionContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { stripSectionMarkers } from '../../utils/parseStructuredResponse';
 import StructuredCard from './StructuredCard';
 
@@ -161,6 +162,7 @@ function MessageBubble({ message }: { message: Message }) {
 
 export default function InteractionPanel() {
   const { state, actions } = useInteraction();
+  const { user } = useAuth();
   const [draft, setDraft] = useState('');
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
@@ -192,6 +194,17 @@ export default function InteractionPanel() {
   const [voiceInputTranscript, setVoiceInputTranscript] = useState('');
   const [voiceOutputTranscript, setVoiceOutputTranscript] = useState('');
   const stateRef = useRef(state);
+
+  const subscriptionHeaders = useMemo(() => {
+    const headers: Record<string, string> = {};
+    if (user?.uid) {
+      headers['x-user-id'] = user.uid;
+    }
+    if (user?.email) {
+      headers['x-user-email'] = user.email;
+    }
+    return headers;
+  }, [user?.email, user?.uid]);
 
   const panelOpen = state.mode !== 'IDLE' && !voiceMode;
   const anchor = state.anchor;
@@ -475,8 +488,13 @@ export default function InteractionPanel() {
     try {
       const tokenResponse = await fetch(`${API_BASE}/api/realtime-token`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...subscriptionHeaders
+        },
         body: JSON.stringify({
+          userId: user?.uid,
+          email: user?.email,
           anchor: stateRef.current.anchor,
           viewportText: stateRef.current.viewportText,
           mode: stateRef.current.mode,
@@ -599,8 +617,11 @@ export default function InteractionPanel() {
     }
     const response = await fetch(`${API_BASE}/api/tts`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, persona }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...subscriptionHeaders
+      },
+      body: JSON.stringify({ text, persona, userId: user?.uid, email: user?.email }),
       signal: controller?.signal
     });
 
@@ -756,6 +777,7 @@ export default function InteractionPanel() {
           formData.append('audio', blob, `speech.${extension}`);
           const response = await fetch(`${API_BASE}/api/transcribe`, {
             method: 'POST',
+            headers: subscriptionHeaders,
             body: formData
           });
           if (!response.ok) {

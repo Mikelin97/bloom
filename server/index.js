@@ -35,6 +35,8 @@ import {
 } from './moderator.js';
 import { checkDatabaseReadiness } from './prisma.js';
 import { checkRedisReadiness } from './redis.js';
+import { registerPaymentRoutes } from './payments.js';
+import { requireScholarForPrivateRooms, requireTier } from './middleware/requireTier.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 8787;
@@ -78,6 +80,7 @@ app.use(
     origin: corsOrigin === '*' ? true : corsOrigin.split(',').map((value) => value.trim())
   })
 );
+registerPaymentRoutes(app);
 app.use(express.json({ limit: '1mb' }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -256,8 +259,8 @@ app.get('/api/rooms/:roomId', (req, res) => {
   res.json({ room: getRoomPayload(room) });
 });
 
-app.post('/api/rooms', (req, res) => {
-  const { bookId, hostId, hostName, hostAvatarColor } = req.body ?? {};
+app.post('/api/rooms', requireScholarForPrivateRooms, (req, res) => {
+  const { bookId, hostId, hostName, hostAvatarColor, isPrivate } = req.body ?? {};
   if (!bookId || !hostId || !hostName || !hostAvatarColor) {
     res.status(400).json({ error: 'Missing required room fields.' });
     return;
@@ -272,7 +275,8 @@ app.post('/api/rooms', (req, res) => {
     bookId,
     hostId,
     hostName,
-    hostAvatarColor
+    hostAvatarColor,
+    isPrivate: isPrivate === true || isPrivate === 'true'
   });
   res.status(201).json({ room: getRoomPayload(room) });
 });
@@ -422,7 +426,7 @@ app.post('/api/moderator/query', async (req, res) => {
   }
 });
 
-app.post('/api/moderator/respond', async (req, res) => {
+app.post('/api/moderator/respond', requireTier('SCHOLAR'), async (req, res) => {
   try {
     const { roomId, conversation } = req.body ?? {};
     if (!roomId) {
@@ -529,7 +533,7 @@ app.post('/api/roundtable', async (req, res) => {
   }
 });
 
-app.post('/api/realtime-token', async (req, res) => {
+app.post('/api/realtime-token', requireTier('SCHOLAR'), async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
     const { anchor, viewportText, conversationIndex, mode } = req.body ?? {};
@@ -580,7 +584,7 @@ app.post('/api/realtime-token', async (req, res) => {
   }
 });
 
-app.post('/api/tts', async (req, res) => {
+app.post('/api/tts', requireTier('SCHOLAR'), async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
     const { text, persona, voice } = req.body ?? {};
@@ -612,7 +616,7 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
-app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
+app.post('/api/transcribe', requireTier('SCHOLAR'), upload.single('audio'), async (req, res) => {
   if (!ensureApiKey(res)) return;
   let tempPath = '';
   try {

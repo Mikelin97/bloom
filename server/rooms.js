@@ -107,13 +107,13 @@ function generateUniqueInviteCode() {
   throw new Error('Failed to generate a unique invite code.');
 }
 
-export function createRoom({ bookId, hostId, hostName, hostAvatarColor }) {
+export function createRoom({ bookId, hostId, hostName, hostAvatarColor, isPrivate = false }) {
   const createdAt = nowIso();
   const room = {
     id: createId('room'),
     bookId,
     inviteCode: null,
-    isPrivate: false,
+    isPrivate: Boolean(isPrivate),
     participants: [
       {
         id: hostId,

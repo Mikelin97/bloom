@@ -20,6 +20,7 @@ model User {
   avatarColor      String           @default("#7C3AED")
   subscriptionTier SubscriptionTier @default(FREE)
   stripeCustomerId String?          @unique
+  subscriptionId   String?          @unique
   roomsHosted      Room[]           @relation("RoomHost")
   participants     Participant[]
   messages         Message[]

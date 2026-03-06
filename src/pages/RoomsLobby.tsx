@@ -15,6 +15,7 @@ export default function RoomsLobby() {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedBookId, setSelectedBookId] = useState('');
   const [creating, setCreating] = useState(false);
+  const [isPrivateRoom, setIsPrivateRoom] = useState(false);
   const { theme, toggleTheme } = useUiTheme();
 
   const displayName = useMemo(() => nickname || user?.displayName || 'Reader', [nickname, user]);
@@ -51,9 +52,11 @@ export default function RoomsLobby() {
         bookId: selectedBookId,
         hostId: user.uid,
         hostName: displayName,
-        hostAvatarColor: avatarColor
+        hostAvatarColor: avatarColor,
+        isPrivate: isPrivateRoom
       });
       setCreateOpen(false);
+      setIsPrivateRoom(false);
       navigate(`/room/${payload.room.id}`);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to create room.');
@@ -88,6 +91,13 @@ export default function RoomsLobby() {
                 className="salon-btn-primary rounded-xl px-4 py-2 text-sm font-semibold"
               >
                 Create Room
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('/pricing')}
+                className="salon-btn-ghost rounded-xl px-4 py-2 text-sm font-semibold"
+              >
+                Pricing
               </button>
               <button
                 type="button"
@@ -179,7 +189,10 @@ export default function RoomsLobby() {
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
-                onClick={() => setCreateOpen(false)}
+                onClick={() => {
+                  setCreateOpen(false);
+                  setIsPrivateRoom(false);
+                }}
                 className="salon-btn-ghost rounded-xl px-4 py-2 text-sm font-semibold"
               >
                 Cancel
@@ -193,6 +206,15 @@ export default function RoomsLobby() {
                 {creating ? 'Creating…' : 'Create Room'}
               </button>
             </div>
+
+            <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
+              <input
+                type="checkbox"
+                checked={isPrivateRoom}
+                onChange={(event) => setIsPrivateRoom(event.target.checked)}
+              />
+              Private room (Scholar tier required)
+            </label>
           </div>
         </div>
       )}
