@@ -41,7 +41,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
   }
 
   if (onboardingCompleted && (path === '/login' || path === '/onboarding')) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/rooms" replace />;
   }
 
   return <>{children}</>;

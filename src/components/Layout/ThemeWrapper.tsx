@@ -3,25 +3,25 @@ import { useReader } from '../../context/ReaderContext';
 
 const THEMES = {
   light: {
-    bg: '#FFFFFF',
-    text: '#1A202C',
-    muted: '#A0AEC0',
-    panel: 'rgba(255, 255, 255, 0.85)',
-    panelBorder: 'rgba(15, 23, 42, 0.08)'
+    bg: '#F2E6D2',
+    text: '#35261F',
+    muted: '#7A6350',
+    panel: 'rgba(247, 238, 223, 0.88)',
+    panelBorder: 'rgba(124, 92, 63, 0.3)'
   },
   dark: {
-    bg: '#000000',
-    text: '#A3A3A3',
-    muted: '#5B5B5B',
-    panel: 'rgba(10, 10, 10, 0.72)',
-    panelBorder: 'rgba(163, 163, 163, 0.2)'
+    bg: '#18120F',
+    text: '#F2E6D1',
+    muted: '#B8A387',
+    panel: 'rgba(52, 39, 33, 0.88)',
+    panelBorder: 'rgba(185, 150, 107, 0.32)'
   },
   sepia: {
-    bg: '#F4ECD8',
-    text: '#5C4B37',
-    muted: '#A08C74',
-    panel: 'rgba(244, 236, 216, 0.85)',
-    panelBorder: 'rgba(92, 75, 55, 0.18)'
+    bg: '#E9DDC8',
+    text: '#4F3E30',
+    muted: '#8D755E',
+    panel: 'rgba(236, 223, 198, 0.88)',
+    panelBorder: 'rgba(118, 91, 66, 0.28)'
   }
 } as const;
 

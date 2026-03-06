@@ -6,8 +6,8 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Inter", ...defaultTheme.fontFamily.sans],
-        serif: ["Merriweather", ...defaultTheme.fontFamily.serif],
+        sans: ["Spectral", "Inter", ...defaultTheme.fontFamily.sans],
+        serif: ["Cormorant Garamond", "Merriweather", ...defaultTheme.fontFamily.serif],
         mono: ["JetBrains Mono", ...defaultTheme.fontFamily.mono]
       }
     }

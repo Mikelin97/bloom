@@ -4,12 +4,31 @@ import cors from 'cors';
 import multer from 'multer';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
+import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import OpenAI from 'openai';
+import { Server as SocketIOServer } from 'socket.io';
 import { MENTOR_SYSTEM_PROMPT, MENTOR_PROMPTS, PERSONA_PROMPTS } from './prompts.js';
 import { classifyTurn } from './classify.js';
+import {
+  addMessage,
+  createRoom,
+  getRoom,
+  joinRoom,
+  leaveBySocket,
+  listRooms,
+  maxParticipants,
+  updateReadingPosition
+} from './rooms.js';
+import { getBookById, listBooks } from './books.js';
+import {
+  checkModeratorRateLimit,
+  ensureBookEmbeddings,
+  generateModeratorResponse,
+  queryRelevantPassages
+} from './moderator.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 8787;
@@ -20,6 +39,7 @@ const ttsModel = process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts';
 const ttsFormat = process.env.OPENAI_TTS_FORMAT || 'mp3';
 const ttsSpeed = Number(process.env.OPENAI_TTS_SPEED || '1.2') || 1.2;
 const transcribeModel = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
+const embeddingModel = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
 const realtimeModel =
   process.env.OPENAI_REALTIME_MODEL ||
   process.env.OPENAI_VOICE_MODEL ||
@@ -55,9 +75,11 @@ app.use(
 app.use(express.json({ limit: '1mb' }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const client = process.env.OPENAI_API_KEY
+  ? new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    })
+  : null;
 
 function getHttpsOptions() {
   const keyPath = process.env.HTTPS_KEY;
@@ -150,7 +172,7 @@ async function streamResponse(res, { input, temperature }) {
 }
 
 function ensureApiKey(res) {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.OPENAI_API_KEY || !client) {
     res.status(500).json({ error: 'Missing OPENAI_API_KEY.' });
     return false;
   }
@@ -170,6 +192,174 @@ async function writeTempFile(buffer, filename) {
   await fsp.writeFile(tempPath, buffer);
   return tempPath;
 }
+
+function getRoomPayload(room) {
+  const book = getBookById(room.bookId);
+  return {
+    ...room,
+    book: book || null,
+    participantCount: room.participants.length,
+    onlineCount: room.participants.filter((participant) => participant.online).length,
+    maxParticipants: maxParticipants()
+  };
+}
+
+function sanitizeMessageContent(content) {
+  if (typeof content !== 'string') return '';
+  return content.trim().slice(0, 1200);
+}
+
+app.get('/api/books', (_req, res) => {
+  res.json({ books: listBooks() });
+});
+
+app.get('/api/rooms', (_req, res) => {
+  const rooms = listRooms().map((room) => getRoomPayload(room));
+  res.json({ rooms });
+});
+
+app.get('/api/rooms/:roomId', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) {
+    res.status(404).json({ error: 'Room not found.' });
+    return;
+  }
+  res.json({ room: getRoomPayload(room) });
+});
+
+app.post('/api/rooms', (req, res) => {
+  const { bookId, hostId, hostName, hostAvatarColor } = req.body ?? {};
+  if (!bookId || !hostId || !hostName || !hostAvatarColor) {
+    res.status(400).json({ error: 'Missing required room fields.' });
+    return;
+  }
+  const book = getBookById(bookId);
+  if (!book) {
+    res.status(400).json({ error: 'Invalid bookId.' });
+    return;
+  }
+
+  const room = createRoom({
+    bookId,
+    hostId,
+    hostName,
+    hostAvatarColor
+  });
+  res.status(201).json({ room: getRoomPayload(room) });
+});
+
+app.post('/api/moderator/embed', async (req, res) => {
+  try {
+    const { bookId } = req.body ?? {};
+    if (!bookId) {
+      res.status(400).json({ error: 'bookId is required.' });
+      return;
+    }
+
+    const store = await ensureBookEmbeddings({
+      bookId,
+      client,
+      apiKey: process.env.OPENAI_API_KEY,
+      embeddingModel
+    });
+
+    res.json({
+      bookId,
+      generatedAt: store.generatedAt,
+      passageCount: store.passages.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: error?.message || 'Embedding generation failed.' });
+  }
+});
+
+app.post('/api/moderator/query', async (req, res) => {
+  try {
+    const { bookId, conversation, topK } = req.body ?? {};
+    if (!bookId) {
+      res.status(400).json({ error: 'bookId is required.' });
+      return;
+    }
+
+    const passages = await queryRelevantPassages({
+      bookId,
+      conversationText: typeof conversation === 'string' ? conversation : '',
+      topK: typeof topK === 'number' ? topK : 3,
+      client,
+      apiKey: process.env.OPENAI_API_KEY,
+      embeddingModel
+    });
+    res.json({ passages });
+  } catch (error) {
+    res.status(500).json({ error: error?.message || 'Passage query failed.' });
+  }
+});
+
+app.post('/api/moderator/respond', async (req, res) => {
+  try {
+    const { roomId, conversation } = req.body ?? {};
+    if (!roomId) {
+      res.status(400).json({ error: 'roomId is required.' });
+      return;
+    }
+
+    const room = getRoom(roomId);
+    if (!room) {
+      res.status(404).json({ error: 'Room not found.' });
+      return;
+    }
+
+    const limit = checkModeratorRateLimit(roomId, 30_000);
+    if (!limit.allowed) {
+      res.status(429).json({ error: 'Moderator is cooling down.', retryAfterMs: limit.remainingMs });
+      return;
+    }
+
+    const conversationText = Array.isArray(conversation)
+      ? conversation.map((item) => `${item.participantName || item.role || 'Reader'}: ${item.content || ''}`).join('\n')
+      : '';
+
+    const passages = await queryRelevantPassages({
+      bookId: room.bookId,
+      conversationText,
+      topK: 3,
+      client,
+      apiKey: process.env.OPENAI_API_KEY,
+      embeddingModel
+    });
+
+    const response = await generateModeratorResponse({
+      room,
+      conversation,
+      passages,
+      client,
+      apiKey: process.env.OPENAI_API_KEY,
+      chatModel
+    });
+
+    const message = addMessage({
+      roomId,
+      participantId: 'moderator',
+      participantName: 'Bloom Moderator',
+      content: response.content,
+      anchorParagraph: response.anchorParagraph,
+      type: 'moderator'
+    });
+
+    if (!message) {
+      res.status(500).json({ error: 'Unable to append moderator message.' });
+      return;
+    }
+
+    if (globalThis.__bloomIo) {
+      globalThis.__bloomIo.to(roomId).emit('chat:message', message);
+    }
+
+    res.json({ message, passages });
+  } catch (error) {
+    res.status(500).json({ error: error?.message || 'Moderator response failed.' });
+  }
+});
 
 app.post('/api/mentor', async (req, res) => {
   if (!ensureApiKey(res)) return;
@@ -327,21 +517,161 @@ const httpsOptions = getHttpsOptions();
 const protocol = httpsOptions ? 'https' : 'http';
 const displayHost = host || 'localhost';
 const listenHost = host || undefined;
+const server = httpsOptions ? https.createServer(httpsOptions, app) : http.createServer(app);
 
-if (httpsOptions) {
-  https.createServer(httpsOptions, app).listen(port, listenHost, () => {
-    console.log(
-      `Reimagine Reading API running on ${protocol}://${displayHost}:${port} (listening on ${
-        listenHost || '0.0.0.0'
-      })`
-    );
-  });
-} else {
-  app.listen(port, listenHost, () => {
-    console.log(
-      `Reimagine Reading API running on ${protocol}://${displayHost}:${port} (listening on ${
-        listenHost || '0.0.0.0'
-      })`
-    );
+const io = new SocketIOServer(server, {
+  cors: {
+    origin: corsOrigin === '*' ? true : corsOrigin.split(',').map((value) => value.trim())
+  }
+});
+
+globalThis.__bloomIo = io;
+
+function emitPresence(roomId) {
+  const room = getRoom(roomId);
+  if (!room) return;
+  io.to(roomId).emit('presence:update', {
+    roomId,
+    participants: room.participants,
+    onlineCount: room.participants.filter((participant) => participant.online).length
   });
 }
+
+io.on('connection', (socket) => {
+  socket.emit('socket:connected', {
+    socketId: socket.id,
+    timestamp: new Date().toISOString()
+  });
+
+  socket.on('room:join', (payload, callback) => {
+    const roomId = payload?.roomId;
+    const participantId = payload?.participantId;
+    const displayName = payload?.displayName;
+    const avatarColor = payload?.avatarColor;
+
+    if (!roomId || !participantId || !displayName || !avatarColor) {
+      callback?.({ error: 'Missing join fields.' });
+      return;
+    }
+
+    const joined = joinRoom({
+      roomId,
+      participantId,
+      displayName,
+      avatarColor,
+      socketId: socket.id
+    });
+
+    if (joined.error || !joined.room || !joined.participant) {
+      callback?.({ error: joined.error || 'Unable to join room.' });
+      return;
+    }
+
+    socket.join(roomId);
+
+    const joinedNotice = addMessage({
+      roomId,
+      participantId: 'system',
+      participantName: 'System',
+      content: `${joined.participant.displayName} joined the reading room.`,
+      type: 'system'
+    });
+
+    socket.emit('room:state', {
+      room: getRoomPayload(joined.room)
+    });
+    emitPresence(roomId);
+    if (joinedNotice) {
+      io.to(roomId).emit('chat:message', joinedNotice);
+    }
+
+    callback?.({ ok: true, room: getRoomPayload(joined.room), maxParticipants: maxParticipants() });
+  });
+
+  socket.on('chat:send', (payload, callback) => {
+    const roomId = payload?.roomId;
+    const participantId = payload?.participantId;
+    const participantName = payload?.participantName;
+    const content = sanitizeMessageContent(payload?.content);
+    const anchorParagraph = payload?.anchorParagraph || null;
+
+    if (!roomId || !participantId || !content) {
+      callback?.({ error: 'Invalid message payload.' });
+      return;
+    }
+
+    const room = getRoom(roomId);
+    if (!room) {
+      callback?.({ error: 'Room not found.' });
+      return;
+    }
+
+    const message = addMessage({
+      roomId,
+      participantId,
+      participantName,
+      content,
+      anchorParagraph,
+      type: 'chat'
+    });
+
+    if (!message) {
+      callback?.({ error: 'Unable to send message.' });
+      return;
+    }
+
+    io.to(roomId).emit('chat:message', message);
+    callback?.({ ok: true, message });
+  });
+
+  socket.on('chat:typing', (payload) => {
+    const roomId = payload?.roomId;
+    if (!roomId) return;
+    socket.to(roomId).emit('chat:typing', {
+      roomId,
+      participantId: payload?.participantId,
+      participantName: payload?.participantName,
+      isTyping: Boolean(payload?.isTyping)
+    });
+  });
+
+  socket.on('reader:position', (payload) => {
+    const roomId = payload?.roomId;
+    const participantId = payload?.participantId;
+    if (!roomId || !participantId) return;
+    updateReadingPosition({
+      roomId,
+      participantId,
+      paragraphId: payload?.paragraphId || null
+    });
+    emitPresence(roomId);
+  });
+
+  socket.on('disconnect', () => {
+    const result = leaveBySocket(socket.id);
+    if (!result?.roomId || !result.participant) {
+      return;
+    }
+
+    const leftNotice = addMessage({
+      roomId: result.roomId,
+      participantId: 'system',
+      participantName: 'System',
+      content: `${result.participant.displayName} left the reading room.`,
+      type: 'system'
+    });
+
+    emitPresence(result.roomId);
+    if (leftNotice) {
+      io.to(result.roomId).emit('chat:message', leftNotice);
+    }
+  });
+});
+
+server.listen(port, listenHost, () => {
+  console.log(
+    `Reimagine Reading API running on ${protocol}://${displayHost}:${port} (listening on ${
+      listenHost || '0.0.0.0'
+    })`
+  );
+});

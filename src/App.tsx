@@ -3,6 +3,8 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
 import Onboarding from './pages/Onboarding';
+import ReadingRoom from './pages/ReadingRoom';
+import RoomsLobby from './pages/RoomsLobby';
 
 export default function App() {
   return (
@@ -11,7 +13,7 @@ export default function App() {
         path="/"
         element={
           <ProtectedRoute>
-            <Navigate to="/dashboard" replace />
+            <Navigate to="/rooms" replace />
           </ProtectedRoute>
         }
       />
@@ -28,6 +30,22 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Onboarding />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/rooms"
+        element={
+          <ProtectedRoute>
+            <RoomsLobby />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/room/:roomId"
+        element={
+          <ProtectedRoute>
+            <ReadingRoom />
           </ProtectedRoute>
         }
       />

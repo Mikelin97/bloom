@@ -53,7 +53,17 @@ function AuthProbe() {
       <button type="button" onClick={() => void signInWithGoogle()}>
         sign-in-google
       </button>
-      <button type="button" onClick={() => void completeOnboarding('Neo')}>
+      <button
+        type="button"
+        onClick={() =>
+          void completeOnboarding({
+            nickname: 'Neo',
+            avatarColor: '#7C3AED',
+            interests: ['Ethics'],
+            tutorialCompleted: true
+          })
+        }
+      >
         complete-onboarding
       </button>
     </div>
@@ -71,7 +81,12 @@ function renderAuthProvider() {
 describe('AuthContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    window.localStorage.clear();
+    const storage = window.localStorage as Storage & { clear?: () => void };
+    if (typeof storage.clear === 'function') {
+      storage.clear();
+    } else {
+      Object.keys(storage).forEach((key) => storage.removeItem(key));
+    }
 
     mocks.isSignInWithEmailLink.mockReturnValue(false);
     mocks.signInWithEmailLink.mockResolvedValue(undefined);
@@ -175,7 +190,10 @@ describe('AuthContext', () => {
         'uid-2',
         expect.objectContaining({
           onboarding_completed: true,
-          nickname: 'Neo'
+          nickname: 'Neo',
+          avatar_color: '#7C3AED',
+          interests: ['Ethics'],
+          tutorial_completed: true
         })
       );
     });

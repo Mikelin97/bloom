@@ -34,7 +34,7 @@ const STORAGE_KEY = 'zen_reader_state';
 
 const defaultState: AppState = {
   settings: {
-    theme: 'light',
+    theme: 'dark',
     fontFamily: 'serif',
     fontSizeStep: 3,
     scrollPosition: 0,
