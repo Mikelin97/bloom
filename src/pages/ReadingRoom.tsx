@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Link, useParams } from 'react-router-dom';
-import { fetchRoom, requestModeratorReply } from '../lib/readingClubApi';
+import { fetchRoom, generateRoomInvite, requestModeratorReply } from '../lib/readingClubApi';
 import { createReadingClubSocket } from '../lib/readingClubSocket';
 import type { ChatMessage, Participant, ReadingRoom } from '../types/readingSession';
 import { useAuth } from '../contexts/AuthContext';
@@ -18,12 +18,15 @@ function formatClock(value: string) {
 export default function ReadingRoom() {
   const { roomId = '' } = useParams();
   const { user, nickname, avatarColor } = useAuth();
+  const appBaseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
 
   const [room, setRoom] = useState<ReadingRoom | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [toast, setToast] = useState('');
 
   const [leftWidth, setLeftWidth] = useState(60);
   const [chatCollapsed, setChatCollapsed] = useState(false);
@@ -44,6 +47,7 @@ export default function ReadingRoom() {
   const visibleParagraphs = useRef<Set<string>>(new Set());
   const lastSharedParagraph = useRef<string | null>(null);
   const lastActivityAt = useRef(Date.now());
+  const toastTimerRef = useRef<number | null>(null);
 
   const me = useMemo(
     () => ({
@@ -56,6 +60,29 @@ export default function ReadingRoom() {
 
   const content = useMemo(() => getReaderContentById(room?.bookId), [room?.bookId]);
   const moderatorCooldownMs = Math.max(0, 30_000 - (Date.now() - lastModeratorCallAt));
+  const isHost = participants.some((participant) => participant.id === me.id && participant.isHost);
+
+  const copyToClipboard = async (value: string) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+
+    const input = document.createElement('textarea');
+    input.value = value;
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand('copy');
+    document.body.removeChild(input);
+  };
+
+  const showToast = (message: string) => {
+    setToast(message);
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => setToast(''), 3000);
+  };
 
   const updateMessages = (nextMessage: ChatMessage) => {
     setMessages((previous) => {
@@ -193,6 +220,15 @@ export default function ReadingRoom() {
     return () => window.clearInterval(timer);
   }, [moderatorLoading]);
 
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     const elements = Array.from(paragraphRefs.current.values());
     if (elements.length === 0) {
@@ -298,6 +334,43 @@ export default function ReadingRoom() {
     }
   };
 
+  const onShareInvite = async (regenerate = false) => {
+    if (!roomId || !me.id) {
+      return;
+    }
+
+    const existingCode = room?.inviteCode || null;
+    if (!regenerate && existingCode) {
+      try {
+        const link = `${appBaseUrl}/join/${existingCode}`;
+        await copyToClipboard(link);
+        showToast('Invite link copied.');
+      } catch {
+        setError('Failed to copy invite link.');
+      }
+      return;
+    }
+
+    if (!isHost) {
+      setError('Only the room host can generate a new invite link.');
+      return;
+    }
+
+    setInviteBusy(true);
+    try {
+      const payload = await generateRoomInvite(roomId, { userId: me.id });
+      setRoom(payload.room);
+      const inviteLink = payload.invite.link || `${appBaseUrl}/join/${payload.invite.code}`;
+      await copyToClipboard(inviteLink);
+      showToast(regenerate ? 'Invite regenerated and copied.' : 'Invite link copied.');
+      setError('');
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Failed to generate invite link.');
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
   const typingLabel = Object.values(typingUsers).join(', ');
 
   if (loading) {
@@ -337,6 +410,30 @@ export default function ReadingRoom() {
             </Link>
             <h1 className="text-2xl font-semibold text-[var(--app-text)]">{room.book?.title || room.bookId}</h1>
           </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              void onShareInvite(false);
+            }}
+            className="salon-btn-primary rounded-lg px-3 py-1 text-xs"
+            disabled={inviteBusy}
+          >
+            {inviteBusy ? 'Working…' : 'Share'}
+          </button>
+
+          {isHost && (
+            <button
+              type="button"
+              onClick={() => {
+                void onShareInvite(true);
+              }}
+              className="salon-btn-ghost hidden rounded-lg px-3 py-1 text-xs md:block"
+              disabled={inviteBusy}
+            >
+              Regenerate Invite
+            </button>
+          )}
 
           <button
             type="button"
@@ -598,6 +695,12 @@ export default function ReadingRoom() {
           )}
         </aside>
       </main>
+
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-30 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-[var(--app-text)] shadow-lg">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

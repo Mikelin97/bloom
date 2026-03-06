@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import ProtectedRoute from './components/ProtectedRoute';
 import Dashboard from './pages/Dashboard';
+import JoinRoomInvite from './pages/JoinRoomInvite';
 import Login from './pages/Login';
 import Onboarding from './pages/Onboarding';
 import ReadingRoom from './pages/ReadingRoom';
@@ -46,6 +47,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <ReadingRoom />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/join/:code"
+        element={
+          <ProtectedRoute>
+            <JoinRoomInvite />
           </ProtectedRoute>
         }
       />

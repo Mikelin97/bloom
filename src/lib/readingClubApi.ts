@@ -1,4 +1,10 @@
-import type { ChatMessage, ReadingBook, ReadingRoom } from '../types/readingSession';
+import type {
+  ChatMessage,
+  InviteRoomPreview,
+  ReadingBook,
+  ReadingRoom,
+  RoomInvite
+} from '../types/readingSession';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -54,4 +60,28 @@ export async function requestModeratorReply(payload: {
       body: JSON.stringify(payload)
     }
   );
+}
+
+export async function generateRoomInvite(
+  roomId: string,
+  payload: { userId: string; maxUses?: number; expiresInHours?: number }
+) {
+  return request<{ invite: RoomInvite; room: ReadingRoom }>(`/api/rooms/${roomId}/invite`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function fetchInvitePreview(code: string) {
+  return request<{ invite: RoomInvite; room: InviteRoomPreview }>(`/api/invite/${code}`);
+}
+
+export async function joinRoomByInvite(
+  code: string,
+  payload: { participantId: string; displayName: string; avatarColor: string }
+) {
+  return request<{ room: ReadingRoom; alreadyMember: boolean }>(`/api/invite/${code}/join`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
 }
