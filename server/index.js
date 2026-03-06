@@ -29,6 +29,8 @@ import {
   generateModeratorResponse,
   queryRelevantPassages
 } from './moderator.js';
+import { checkDatabaseReadiness } from './prisma.js';
+import { checkRedisReadiness } from './redis.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 8787;
@@ -74,6 +76,25 @@ app.use(
 );
 app.use(express.json({ limit: '1mb' }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+app.get('/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Number(process.uptime().toFixed(3))
+  });
+});
+
+app.get('/ready', async (_req, res) => {
+  const checks = await Promise.all([checkDatabaseReadiness(), checkRedisReadiness()]);
+  const hasFailure = checks.some((check) => check.status === 'error');
+
+  res.status(hasFailure ? 503 : 200).json({
+    status: hasFailure ? 'not_ready' : 'ready',
+    timestamp: new Date().toISOString(),
+    checks
+  });
+});
 
 const client = process.env.OPENAI_API_KEY
   ? new OpenAI({
