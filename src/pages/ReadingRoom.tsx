@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type TouchEvent, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Link, useParams } from 'react-router-dom';
 import { fetchRoom, requestModeratorReply } from '../lib/readingClubApi';
@@ -7,8 +7,26 @@ import type { ChatMessage, Participant, ReadingRoom } from '../types/readingSess
 import { useAuth } from '../contexts/AuthContext';
 import { getReaderContentById } from '../content/library';
 import { useUiTheme } from '../hooks/useUiTheme';
+import SelectionPopover, { type SelectionAction } from '../components/Reader/SelectionPopover';
+import VoiceChat from '../components/Voice/VoiceChat';
 
 type MobilePanel = 'reader' | 'chat';
+
+interface SelectionPopoverState {
+  open: boolean;
+  paragraphId: string | null;
+  text: string;
+  rect: DOMRect | null;
+}
+
+function nodeToText(node: any): string {
+  if (!node) return '';
+  if (node.type === 'text') return node.value || '';
+  if (node.children && Array.isArray(node.children)) {
+    return node.children.map(nodeToText).join('');
+  }
+  return '';
+}
 
 function formatClock(value: string) {
   const date = new Date(value);
@@ -28,10 +46,19 @@ export default function ReadingRoom() {
   const [leftWidth, setLeftWidth] = useState(60);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>('reader');
+  const [voiceOpen, setVoiceOpen] = useState(false);
 
   const [messageInput, setMessageInput] = useState('');
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const [selectedAnchor, setSelectedAnchor] = useState<string | null>(null);
+  const [highlightedParagraphIds, setHighlightedParagraphIds] = useState<string[]>([]);
+  const [flashParagraphId, setFlashParagraphId] = useState<string | null>(null);
+  const [selectionPopover, setSelectionPopover] = useState<SelectionPopoverState>({
+    open: false,
+    paragraphId: null,
+    text: '',
+    rect: null
+  });
   const [moderatorLoading, setModeratorLoading] = useState(false);
   const [lastModeratorCallAt, setLastModeratorCallAt] = useState(0);
   const [showModeratorSuggestion, setShowModeratorSuggestion] = useState(false);
@@ -39,8 +66,13 @@ export default function ReadingRoom() {
 
   const socketRef = useRef<ReturnType<typeof createReadingClubSocket> | null>(null);
   const typingTimerRef = useRef<number | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+  const messageInputRef = useRef<HTMLInputElement | null>(null);
   const draggingRef = useRef(false);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
   const paragraphRefs = useRef<Map<string, HTMLParagraphElement>>(new Map());
+  const paragraphText = useRef<Map<string, string>>(new Map());
   const visibleParagraphs = useRef<Set<string>>(new Set());
   const lastSharedParagraph = useRef<string | null>(null);
   const lastActivityAt = useRef(Date.now());
@@ -56,6 +88,54 @@ export default function ReadingRoom() {
 
   const content = useMemo(() => getReaderContentById(room?.bookId), [room?.bookId]);
   const moderatorCooldownMs = Math.max(0, 30_000 - (Date.now() - lastModeratorCallAt));
+  const anchoredParagraphIds = useMemo(() => {
+    const ids = new Set<string>();
+    messages.forEach((message) => {
+      if (message.anchorParagraph) {
+        ids.add(message.anchorParagraph);
+      }
+    });
+    highlightedParagraphIds.forEach((id) => ids.add(id));
+    if (selectedAnchor) {
+      ids.add(selectedAnchor);
+    }
+    return ids;
+  }, [highlightedParagraphIds, messages, selectedAnchor]);
+
+  const closeSelectionPopover = () => {
+    setSelectionPopover({
+      open: false,
+      paragraphId: null,
+      text: '',
+      rect: null
+    });
+  };
+
+  const flashParagraph = (paragraphId: string) => {
+    if (flashTimerRef.current) {
+      window.clearTimeout(flashTimerRef.current);
+    }
+    setFlashParagraphId(null);
+    window.requestAnimationFrame(() => setFlashParagraphId(paragraphId));
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlashParagraphId((current) => (current === paragraphId ? null : current));
+    }, 1300);
+  };
+
+  const markParagraphHighlighted = (paragraphId: string) => {
+    setHighlightedParagraphIds((previous) =>
+      previous.includes(paragraphId) ? previous : [...previous, paragraphId]
+    );
+  };
+
+  const focusAnchor = (paragraphId: string, options?: { scroll?: boolean }) => {
+    setSelectedAnchor(paragraphId);
+    markParagraphHighlighted(paragraphId);
+    flashParagraph(paragraphId);
+    if (options?.scroll !== false) {
+      paragraphRefs.current.get(paragraphId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
 
   const updateMessages = (nextMessage: ChatMessage) => {
     setMessages((previous) => {
@@ -230,6 +310,114 @@ export default function ReadingRoom() {
     return () => observer.disconnect();
   }, [content.id, me.id, roomId]);
 
+  useEffect(() => {
+    return () => {
+      if (typingTimerRef.current) {
+        window.clearTimeout(typingTimerRef.current);
+      }
+      if (flashTimerRef.current) {
+        window.clearTimeout(flashTimerRef.current);
+      }
+      if (longPressTimerRef.current) {
+        window.clearTimeout(longPressTimerRef.current);
+      }
+    };
+  }, []);
+
+  const getSelectionPayload = () => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return null;
+    }
+
+    const text = selection.toString().trim();
+    if (!text) {
+      return null;
+    }
+
+    const range = selection.getRangeAt(0);
+    const startElement =
+      range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+    const paragraph = startElement?.closest('[data-paragraph-id]') as HTMLElement | null;
+    const paragraphId = paragraph?.dataset.paragraphId;
+    if (!paragraphId) {
+      return null;
+    }
+
+    const rect = range.getBoundingClientRect();
+    const nextRect =
+      rect.width > 0 || rect.height > 0 ? rect : paragraph.getBoundingClientRect();
+
+    return {
+      paragraphId,
+      text,
+      rect: nextRect
+    };
+  };
+
+  const openSelectionPopover = (paragraphId: string, text: string, rect: DOMRect) => {
+    setSelectionPopover({
+      open: true,
+      paragraphId,
+      text,
+      rect
+    });
+  };
+
+  const maybeOpenSelectionPopover = () => {
+    if (longPressTriggeredRef.current) {
+      return;
+    }
+    const payload = getSelectionPayload();
+    if (!payload) {
+      closeSelectionPopover();
+      return;
+    }
+    openSelectionPopover(payload.paragraphId, payload.text, payload.rect);
+  };
+
+  useEffect(() => {
+    const onSelectionChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.toString().trim()) {
+        closeSelectionPopover();
+      }
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () => document.removeEventListener('selectionchange', onSelectionChange);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) {
+        return;
+      }
+
+      const isAnchorShortcut =
+        (event.metaKey || event.ctrlKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === 'a';
+      if (!isAnchorShortcut) {
+        return;
+      }
+
+      const payload = getSelectionPayload();
+      if (!payload) {
+        return;
+      }
+
+      event.preventDefault();
+      focusAnchor(payload.paragraphId, { scroll: false });
+      closeSelectionPopover();
+      messageInputRef.current?.focus();
+      window.getSelection()?.removeAllRanges();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   const sendTyping = (isTyping: boolean) => {
     if (!socketRef.current || !roomId || !me.id) {
       return;
@@ -270,12 +458,60 @@ export default function ReadingRoom() {
     sendTyping(false);
   };
 
+  const onSelectionAction = (action: SelectionAction) => {
+    const paragraphId = selectionPopover.paragraphId;
+    if (!paragraphId) {
+      closeSelectionPopover();
+      return;
+    }
+
+    if (action === 'anchor') {
+      focusAnchor(paragraphId, { scroll: false });
+      messageInputRef.current?.focus();
+    }
+
+    if (action === 'highlight') {
+      markParagraphHighlighted(paragraphId);
+      flashParagraph(paragraphId);
+    }
+
+    if (action === 'moderator') {
+      focusAnchor(paragraphId, { scroll: false });
+      void onSummonModerator();
+    }
+
+    closeSelectionPopover();
+    window.getSelection()?.removeAllRanges();
+  };
+
   const scrollToParagraph = (paragraphId: string | null | undefined) => {
     if (!paragraphId) return;
-    const target = paragraphRefs.current.get(paragraphId);
-    if (!target) return;
-    setSelectedAnchor(paragraphId);
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    focusAnchor(paragraphId);
+  };
+
+  const onParagraphLongPressStart = (
+    event: TouchEvent<HTMLParagraphElement>,
+    paragraphId: string,
+    text: string
+  ) => {
+    if (!event.touches[0]) return;
+    const { clientX, clientY } = event.touches[0];
+    longPressTriggeredRef.current = false;
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+    }
+
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      openSelectionPopover(paragraphId, text, new DOMRect(clientX, clientY, 1, 1));
+    }, 430);
+  };
+
+  const clearParagraphLongPress = () => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
   };
 
   const onSummonModerator = async () => {
@@ -288,7 +524,9 @@ export default function ReadingRoom() {
     try {
       await requestModeratorReply({
         roomId,
-        conversation: messages.slice(-12)
+        conversation: messages.slice(-12),
+        userId: user?.uid || '',
+        email: user?.email || undefined
       });
       setShowModeratorSuggestion(false);
     } catch (nextError) {
@@ -328,7 +566,7 @@ export default function ReadingRoom() {
   let paragraphIndex = 0;
 
   return (
-    <div className="min-h-screen text-[var(--app-text)]">
+    <div className="flex min-h-screen flex-col text-[var(--app-text)]">
       <header className="border-b border-[var(--border-subtle)] bg-[var(--surface-strong)] px-4 py-3 md:px-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -338,15 +576,35 @@ export default function ReadingRoom() {
             <h1 className="text-2xl font-semibold text-[var(--app-text)]">{room.book?.title || room.bookId}</h1>
           </div>
 
-          <button
-            type="button"
-            onClick={toggleTheme}
-            className="salon-btn-ghost hidden rounded-lg px-3 py-1 text-xs md:block"
-          >
-            {theme === 'dark' ? 'Light' : 'Dark'}
-          </button>
+          <div className="hidden items-center gap-2 md:flex">
+            <button
+              type="button"
+              onClick={() => setVoiceOpen((value) => !value)}
+              className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+                voiceOpen ? 'salon-btn-primary' : 'salon-btn-ghost'
+              }`}
+            >
+              {voiceOpen ? 'Voice On' : 'Voice'}
+            </button>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="salon-btn-ghost rounded-lg px-3 py-1 text-xs"
+            >
+              {theme === 'dark' ? 'Light' : 'Dark'}
+            </button>
+          </div>
 
           <div className="flex items-center gap-2 md:hidden">
+            <button
+              type="button"
+              onClick={() => setVoiceOpen((value) => !value)}
+              className={`rounded-lg px-3 py-1 text-sm font-semibold ${
+                voiceOpen ? 'salon-btn-primary' : 'salon-btn-ghost text-[var(--app-text-muted)]'
+              }`}
+            >
+              Voice
+            </button>
             <button
               type="button"
               className={`rounded-lg px-3 py-1 text-sm ${
@@ -386,18 +644,33 @@ export default function ReadingRoom() {
         </p>
       )}
 
-      <main className="flex h-[calc(100vh-77px)] overflow-hidden">
+      {voiceOpen && room && me.id && (
+        <VoiceChat
+          roomId={roomId}
+          participantId={me.id}
+          participantName={me.name}
+          avatarColor={me.avatarColor}
+        />
+      )}
+
+      <main className="flex min-h-0 flex-1 overflow-hidden">
         <section
           className={`${mobilePanel === 'chat' ? 'hidden md:block' : 'block'} custom-scrollbar overflow-y-auto px-4 py-6 md:px-8`}
           style={readerPanelStyle}
+          onMouseUp={maybeOpenSelectionPopover}
+          onKeyUp={maybeOpenSelectionPopover}
         >
           <article className="reader-prose prose max-w-none">
             <ReactMarkdown
               components={{
-                p: ({ children }) => {
+                p: ({ node, children }) => {
                   paragraphIndex += 1;
                   const id = `p-${paragraphIndex}`;
                   const active = selectedAnchor === id;
+                  const isAnchored = anchoredParagraphIds.has(id);
+                  const shouldFlash = flashParagraphId === id;
+                  const paragraphPlainText = nodeToText(node).trim();
+                  paragraphText.current.set(id, paragraphPlainText);
 
                   return (
                     <p
@@ -409,18 +682,36 @@ export default function ReadingRoom() {
                           paragraphRefs.current.delete(id);
                         }
                       }}
-                      className={`group relative cursor-pointer rounded-lg px-2 py-1 transition ${
+                      className={`group relative cursor-pointer rounded-lg px-2 py-1 transition-all duration-300 ${
                         active
                           ? 'bg-[rgba(191,149,96,0.16)] shadow-[0_0_0_1px_var(--accent-brass)]'
                           : 'hover:bg-[var(--surface-soft)]'
-                      }`}
-                      onClick={() => setSelectedAnchor(active ? null : id)}
+                      } ${shouldFlash ? 'reader-anchor-flash' : ''}`}
+                      onClick={() => {
+                        if (window.getSelection()?.toString().trim()) {
+                          return;
+                        }
+                        if (longPressTriggeredRef.current) {
+                          longPressTriggeredRef.current = false;
+                          return;
+                        }
+                        setSelectedAnchor(active ? null : id);
+                      }}
+                      onTouchStart={(event) => onParagraphLongPressStart(event, id, paragraphPlainText)}
+                      onTouchMove={clearParagraphLongPress}
+                      onTouchCancel={clearParagraphLongPress}
+                      onTouchEnd={() => {
+                        clearParagraphLongPress();
+                        window.setTimeout(() => {
+                          longPressTriggeredRef.current = false;
+                        }, 0);
+                      }}
                     >
                       <span
-                        className={`absolute -left-4 top-2 h-2 w-2 rounded-full ${
-                          active
-                            ? 'bg-[var(--accent-brass)]'
-                            : 'bg-[var(--app-text-muted)] opacity-0 group-hover:opacity-100'
+                        className={`absolute -left-4 top-2 h-2 w-2 rounded-full transition-all duration-300 ${
+                          isAnchored
+                            ? 'scale-100 bg-[var(--accent-brass)] opacity-70'
+                            : 'scale-75 bg-[var(--app-text-muted)] opacity-0 group-hover:scale-100 group-hover:opacity-55'
                         }`}
                       />
                       {children}
@@ -522,9 +813,13 @@ export default function ReadingRoom() {
                         <button
                           type="button"
                           onClick={() => scrollToParagraph(message.anchorParagraph)}
-                          className="mt-2 rounded-md border border-[var(--accent-brass)] px-2 py-1 text-xs text-[var(--accent-brass)] transition hover:bg-[var(--surface-soft)]"
+                          className="mt-2 inline-flex items-center gap-2 rounded-md border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--app-text-muted)] transition hover:border-[var(--accent-brass)] hover:text-[var(--accent-brass)]"
                         >
-                          Anchored to {message.anchorParagraph}
+                          <span className="h-2.5 w-2.5 rounded-full bg-[var(--accent-brass)] shadow-[0_0_0_2px_color-mix(in_srgb,var(--accent-brass)_25%,transparent)]" />
+                          <span className="max-w-[16rem] truncate">
+                            {paragraphText.current.get(message.anchorParagraph) ||
+                              `Jump to ${message.anchorParagraph}`}
+                          </span>
                         </button>
                       )}
                     </article>
@@ -561,6 +856,7 @@ export default function ReadingRoom() {
 
                 <div className="flex gap-2">
                   <input
+                    ref={messageInputRef}
                     value={messageInput}
                     onChange={(event) => onInputChange(event.target.value)}
                     onKeyDown={(event) => {
@@ -598,6 +894,14 @@ export default function ReadingRoom() {
           )}
         </aside>
       </main>
+
+      <SelectionPopover
+        open={selectionPopover.open}
+        referenceRect={selectionPopover.rect}
+        selectionText={selectionPopover.text}
+        onClose={closeSelectionPopover}
+        onAction={onSelectionAction}
+      />
     </div>
   );
 }

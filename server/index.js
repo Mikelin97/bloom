@@ -15,7 +15,11 @@ import { classifyTurn } from './classify.js';
 import {
   addMessage,
   createRoom,
+  createRoomInvite,
   getRoom,
+  getInvitePreview,
+  isRoomHost,
+  joinRoomViaInvite,
   joinRoom,
   leaveBySocket,
   listRooms,
@@ -29,6 +33,11 @@ import {
   generateModeratorResponse,
   queryRelevantPassages
 } from './moderator.js';
+import { registerVoiceRoutes } from './voice.js';
+import { checkDatabaseReadiness } from './prisma.js';
+import { checkRedisReadiness } from './redis.js';
+import { registerPaymentRoutes } from './payments.js';
+import { requireScholarForPrivateRooms, requireTier } from './middleware/requireTier.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 8787;
@@ -72,8 +81,29 @@ app.use(
     origin: corsOrigin === '*' ? true : corsOrigin.split(',').map((value) => value.trim())
   })
 );
+registerPaymentRoutes(app);
 app.use(express.json({ limit: '1mb' }));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+registerVoiceRoutes(app);
+
+app.get('/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Number(process.uptime().toFixed(3))
+  });
+});
+
+app.get('/ready', async (_req, res) => {
+  const checks = await Promise.all([checkDatabaseReadiness(), checkRedisReadiness()]);
+  const hasFailure = checks.some((check) => check.status === 'error');
+
+  res.status(hasFailure ? 503 : 200).json({
+    status: hasFailure ? 'not_ready' : 'ready',
+    timestamp: new Date().toISOString(),
+    checks
+  });
+});
 
 const client = process.env.OPENAI_API_KEY
   ? new OpenAI({
@@ -209,6 +239,10 @@ function sanitizeMessageContent(content) {
   return content.trim().slice(0, 1200);
 }
 
+function getAppBaseUrl(req) {
+  return process.env.VITE_APP_URL || `${req.protocol}://${req.get('host')}`;
+}
+
 app.get('/api/books', (_req, res) => {
   res.json({ books: listBooks() });
 });
@@ -227,8 +261,8 @@ app.get('/api/rooms/:roomId', (req, res) => {
   res.json({ room: getRoomPayload(room) });
 });
 
-app.post('/api/rooms', (req, res) => {
-  const { bookId, hostId, hostName, hostAvatarColor } = req.body ?? {};
+app.post('/api/rooms', requireScholarForPrivateRooms, (req, res) => {
+  const { bookId, hostId, hostName, hostAvatarColor, isPrivate } = req.body ?? {};
   if (!bookId || !hostId || !hostName || !hostAvatarColor) {
     res.status(400).json({ error: 'Missing required room fields.' });
     return;
@@ -243,9 +277,108 @@ app.post('/api/rooms', (req, res) => {
     bookId,
     hostId,
     hostName,
-    hostAvatarColor
+    hostAvatarColor,
+    isPrivate: isPrivate === true || isPrivate === 'true'
   });
   res.status(201).json({ room: getRoomPayload(room) });
+});
+
+app.post('/api/rooms/:roomId/invite', (req, res) => {
+  const roomId = req.params.roomId;
+  const requesterId = req.body?.userId;
+  if (!requesterId) {
+    res.status(401).json({ error: 'userId is required.' });
+    return;
+  }
+
+  if (!isRoomHost({ roomId, userId: requesterId })) {
+    res.status(403).json({ error: 'Only the room host can generate invite links.' });
+    return;
+  }
+
+  const result = createRoomInvite({
+    roomId,
+    maxUses: req.body?.maxUses,
+    expiresInHours: req.body?.expiresInHours
+  });
+
+  if (result.error || !result.invite) {
+    res.status(404).json({ error: result.error || 'Unable to generate invite.' });
+    return;
+  }
+
+  const appBaseUrl = getAppBaseUrl(req);
+  res.status(201).json({
+    invite: {
+      ...result.invite,
+      link: `${appBaseUrl}/join/${result.invite.code}`
+    },
+    room: getRoomPayload(result.room)
+  });
+});
+
+app.get('/api/invite/:code', (req, res) => {
+  const preview = getInvitePreview(req.params.code);
+  if (preview.error || !preview.room || !preview.invite) {
+    res.status(404).json({ error: preview.error || 'Invite not found.' });
+    return;
+  }
+
+  const book = getBookById(preview.room.bookId);
+  const host = preview.room.participants.find((participant) => participant.isHost);
+
+  res.json({
+    invite: {
+      code: preview.invite.code,
+      expiresAt: preview.invite.expiresAt,
+      maxUses: preview.invite.maxUses,
+      uses: preview.invite.uses,
+      remainingUses: preview.remainingUses
+    },
+    room: {
+      id: preview.room.id,
+      bookId: preview.room.bookId,
+      book: book || null,
+      host: host
+        ? {
+            id: host.id,
+            displayName: host.displayName,
+            avatarColor: host.avatarColor
+          }
+        : null,
+      participantCount: preview.room.participants.length,
+      maxParticipants: maxParticipants(),
+      isPrivate: preview.room.isPrivate,
+      createdAt: preview.room.createdAt
+    }
+  });
+});
+
+app.post('/api/invite/:code/join', (req, res) => {
+  const { participantId, displayName, avatarColor } = req.body ?? {};
+  const joined = joinRoomViaInvite({
+    code: req.params.code,
+    participantId,
+    displayName,
+    avatarColor
+  });
+
+  if (joined.error || !joined.room || !joined.participant) {
+    const status =
+      joined.error === 'Room is full.'
+        ? 409
+        : joined.error === 'Invite is invalid or expired.'
+          ? 404
+          : 400;
+    res.status(status).json({ error: joined.error || 'Failed to join via invite.' });
+    return;
+  }
+
+  res.json({
+    room: getRoomPayload(joined.room),
+    participant: joined.participant,
+    alreadyMember: joined.alreadyMember
+  });
 });
 
 app.post('/api/moderator/embed', async (req, res) => {
@@ -295,7 +428,7 @@ app.post('/api/moderator/query', async (req, res) => {
   }
 });
 
-app.post('/api/moderator/respond', async (req, res) => {
+app.post('/api/moderator/respond', requireTier('SCHOLAR'), async (req, res) => {
   try {
     const { roomId, conversation } = req.body ?? {};
     if (!roomId) {
@@ -402,7 +535,7 @@ app.post('/api/roundtable', async (req, res) => {
   }
 });
 
-app.post('/api/realtime-token', async (req, res) => {
+app.post('/api/realtime-token', requireTier('SCHOLAR'), async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
     const { anchor, viewportText, conversationIndex, mode } = req.body ?? {};
@@ -453,7 +586,7 @@ app.post('/api/realtime-token', async (req, res) => {
   }
 });
 
-app.post('/api/tts', async (req, res) => {
+app.post('/api/tts', requireTier('SCHOLAR'), async (req, res) => {
   if (!ensureApiKey(res)) return;
   try {
     const { text, persona, voice } = req.body ?? {};
@@ -485,7 +618,7 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
-app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
+app.post('/api/transcribe', requireTier('SCHOLAR'), upload.single('audio'), async (req, res) => {
   if (!ensureApiKey(res)) return;
   let tempPath = '';
   try {
