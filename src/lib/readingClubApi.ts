@@ -55,3 +55,22 @@ export async function requestModeratorReply(payload: {
     }
   );
 }
+
+export interface VoiceTokenResponse {
+  mock: boolean;
+  wsUrl: string;
+  token: string;
+  roomName: string;
+  reason?: string;
+}
+
+export async function requestVoiceToken(payload: {
+  roomId: string;
+  participantId: string;
+  participantName: string;
+}) {
+  return request<VoiceTokenResponse>('/api/voice/livekit-token', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}

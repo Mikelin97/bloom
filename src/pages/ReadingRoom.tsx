@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { getReaderContentById } from '../content/library';
 import { useUiTheme } from '../hooks/useUiTheme';
 import SelectionPopover, { type SelectionAction } from '../components/Reader/SelectionPopover';
+import VoiceChat from '../components/Voice/VoiceChat';
 
 type MobilePanel = 'reader' | 'chat';
 
@@ -45,6 +46,7 @@ export default function ReadingRoom() {
   const [leftWidth, setLeftWidth] = useState(60);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>('reader');
+  const [voiceOpen, setVoiceOpen] = useState(false);
 
   const [messageInput, setMessageInput] = useState('');
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
@@ -562,7 +564,7 @@ export default function ReadingRoom() {
   let paragraphIndex = 0;
 
   return (
-    <div className="min-h-screen text-[var(--app-text)]">
+    <div className="flex min-h-screen flex-col text-[var(--app-text)]">
       <header className="border-b border-[var(--border-subtle)] bg-[var(--surface-strong)] px-4 py-3 md:px-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -572,15 +574,35 @@ export default function ReadingRoom() {
             <h1 className="text-2xl font-semibold text-[var(--app-text)]">{room.book?.title || room.bookId}</h1>
           </div>
 
-          <button
-            type="button"
-            onClick={toggleTheme}
-            className="salon-btn-ghost hidden rounded-lg px-3 py-1 text-xs md:block"
-          >
-            {theme === 'dark' ? 'Light' : 'Dark'}
-          </button>
+          <div className="hidden items-center gap-2 md:flex">
+            <button
+              type="button"
+              onClick={() => setVoiceOpen((value) => !value)}
+              className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+                voiceOpen ? 'salon-btn-primary' : 'salon-btn-ghost'
+              }`}
+            >
+              {voiceOpen ? 'Voice On' : 'Voice'}
+            </button>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="salon-btn-ghost rounded-lg px-3 py-1 text-xs"
+            >
+              {theme === 'dark' ? 'Light' : 'Dark'}
+            </button>
+          </div>
 
           <div className="flex items-center gap-2 md:hidden">
+            <button
+              type="button"
+              onClick={() => setVoiceOpen((value) => !value)}
+              className={`rounded-lg px-3 py-1 text-sm font-semibold ${
+                voiceOpen ? 'salon-btn-primary' : 'salon-btn-ghost text-[var(--app-text-muted)]'
+              }`}
+            >
+              Voice
+            </button>
             <button
               type="button"
               className={`rounded-lg px-3 py-1 text-sm ${
@@ -620,7 +642,16 @@ export default function ReadingRoom() {
         </p>
       )}
 
-      <main className="flex h-[calc(100vh-77px)] overflow-hidden">
+      {voiceOpen && room && me.id && (
+        <VoiceChat
+          roomId={roomId}
+          participantId={me.id}
+          participantName={me.name}
+          avatarColor={me.avatarColor}
+        />
+      )}
+
+      <main className="flex min-h-0 flex-1 overflow-hidden">
         <section
           className={`${mobilePanel === 'chat' ? 'hidden md:block' : 'block'} custom-scrollbar overflow-y-auto px-4 py-6 md:px-8`}
           style={readerPanelStyle}
