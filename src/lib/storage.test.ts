@@ -3,7 +3,12 @@ import { getUserMeta, setUserMeta, type UserMeta } from './storage';
 
 describe('storage helpers', () => {
   beforeEach(() => {
-    window.localStorage.clear();
+    const storage = window.localStorage as Storage & { clear?: () => void };
+    if (typeof storage.clear === 'function') {
+      storage.clear();
+      return;
+    }
+    Object.keys(storage).forEach((key) => storage.removeItem(key));
   });
 
   it('sets and gets user metadata', () => {

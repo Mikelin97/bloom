@@ -1,0 +1,81 @@
+# Bloom Social Reading Club - Progress Log
+
+## Codebase Patterns
+
+### Existing Patterns (discovered from codebase)
+- Firebase Auth via `src/contexts/AuthContext.tsx` - use `useAuth()` hook
+- Reader context at `src/context/ReaderContext.tsx` - scroll position, book state
+- Interaction context at `src/context/InteractionContext.tsx` - personas, messages
+- API base from `import.meta.env.VITE_API_BASE`
+- Glassmorphism: `bg-white/10 backdrop-blur-xl border border-white/20`
+- Server runs on port 8787, proxied via Vite
+
+### New Patterns (add as discovered)
+- Room/session shared contract in `src/types/readingSession.ts`
+- Server room store in `server/rooms.js` (in-memory, max participants = 6)
+- Book metadata + paragraph parsing in `server/books.js`
+- RAG utilities in `server/moderator.js` with embedding cache fallback when no API key
+- Socket event contract uses: `room:join`, `room:state`, `chat:send`, `chat:message`, `chat:typing`, `presence:update`, `reader:position`
+- Room APIs: `/api/books`, `/api/rooms`, `/api/rooms/:roomId`, moderator APIs under `/api/moderator/*`
+- New social routes in `src/App.tsx`: `/rooms`, `/room/:roomId`
+- UI theme toggle pattern via `src/hooks/useUiTheme.ts` with `localStorage` key `bloom_ui_theme`
+- Custom test localStorage shim centralized in `src/test/setup.ts`
+
+---
+
+<!-- Progress entries appended below -->
+
+## 2026-03-06
+- ✅ INFRA-001 complete
+  - Added `socket.io` server support and `socket.io-client`
+  - Created Socket.IO server alongside Express and shared HTTP/HTTPS server bootstrap
+  - Implemented room-based joins and connect/disconnect presence updates
+  - Confirmed server starts without errors even without `OPENAI_API_KEY`
+
+- ✅ INFRA-002 complete
+  - Added room/session models and frontend-exported types in `src/types/readingSession.ts`
+  - Implemented in-memory room/message store in `server/rooms.js`
+
+- ✅ UI-001 complete
+  - Added `/rooms` lobby page with glassmorphism card layout
+  - Added create-room modal with book selection and join CTA
+  - Added responsive behavior + hover transitions
+
+- ✅ UI-002 complete
+  - Added `/room/:roomId` split view with reader/chat layout
+  - Added draggable divider, collapsible chat panel, and mobile reader/chat toggle
+  - Added participant avatars/status row at top of chat panel
+
+- ✅ CHAT-001 complete
+  - Added real-time room chat over Socket.IO with live broadcast
+  - Added paragraph anchoring from reader, anchored message indicators, and scroll-to-anchor behavior
+  - Added typing indicators and message input (send button + Enter key)
+  - Added animated message entry styling
+
+- ✅ CHAT-002 complete
+  - Added online/offline presence badges and reading-position display per participant
+  - Added server-emitted join/leave system notifications
+  - Added host badge and enforced max 6 participants at join
+
+- ✅ MOD-001 complete
+  - Added embedding generation endpoint and in-memory embedding cache
+  - Added retrieval query endpoint for relevant book passages
+  - Added moderator response endpoint using retrieved context + conversation
+  - Reused existing OpenAI client pattern with graceful fallback when API key is absent
+
+- ✅ MOD-002 complete
+  - Added “Summon Moderator” action in chat UI with distinct message styling
+  - Added idle-time suggestion prompt after 2+ minutes of inactivity
+  - Added loading state and client/server cooldown handling (30 seconds)
+  - Added moderator paragraph anchor support
+
+- ✅ UX-001 complete
+  - Applied consistent glassmorphism and gradient visuals across lobby/room/onboarding
+  - Added micro-interactions (hover, message entrance, panel collapse)
+  - Added custom scrollbar styles
+  - Set dark mode as default with light-mode toggle support
+
+- ✅ UX-002 complete
+  - Rebuilt onboarding into multi-step flow with progress indicators
+  - Added concept intro, paragraph anchoring tutorial, profile setup, and interest selection
+  - Added skip option for returning users

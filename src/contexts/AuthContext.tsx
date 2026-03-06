@@ -20,9 +20,16 @@ interface AuthContextValue {
   loading: boolean;
   onboardingCompleted: boolean;
   nickname: string;
+  avatarColor: string;
+  interests: string[];
   sendMagicLink: (email: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
-  completeOnboarding: (nickname: string) => Promise<void>;
+  completeOnboarding: (profile: {
+    nickname: string;
+    avatarColor: string;
+    interests: string[];
+    tutorialCompleted: boolean;
+  }) => Promise<void>;
   signOutUser: () => Promise<void>;
 }
 
@@ -33,6 +40,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [onboardingCompleted, setOnboardingCompleted] = useState(false);
   const [nickname, setNickname] = useState('');
+  const [avatarColor, setAvatarColor] = useState('#7C3AED');
+  const [interests, setInterests] = useState<string[]>([]);
 
   useEffect(() => {
     if (!isSignInWithEmailLink(auth, window.location.href)) {
@@ -64,19 +73,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (existingMeta) {
           setOnboardingCompleted(existingMeta.onboarding_completed);
           setNickname(existingMeta.nickname || nextUser.displayName || '');
+          setAvatarColor(existingMeta.avatar_color || '#7C3AED');
+          setInterests(existingMeta.interests || []);
         } else {
           const initializedMeta = {
             onboarding_completed: false,
             created_at: new Date().toISOString(),
-            nickname: nextUser.displayName || ''
+            nickname: nextUser.displayName || '',
+            avatar_color: '#7C3AED',
+            interests: [],
+            tutorial_completed: false
           };
           setUserMeta(nextUser.uid, initializedMeta);
           setOnboardingCompleted(false);
           setNickname(nextUser.displayName || '');
+          setAvatarColor('#7C3AED');
+          setInterests([]);
         }
       } else {
         setOnboardingCompleted(false);
         setNickname('');
+        setAvatarColor('#7C3AED');
+        setInterests([]);
       }
       setLoading(false);
     });
@@ -99,31 +117,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await signInWithPopup(auth, provider);
   }, []);
 
-  const completeOnboarding = useCallback(async (nextNickname: string) => {
-    if (!user) {
-      return;
-    }
+  const completeOnboarding = useCallback(
+    async (profile: {
+      nickname: string;
+      avatarColor: string;
+      interests: string[];
+      tutorialCompleted: boolean;
+    }) => {
+      if (!user) {
+        return;
+      }
 
-    const sanitizedNickname = nextNickname.trim();
-    if (!sanitizedNickname) {
-      throw new Error('Nickname is required');
-    }
+      const sanitizedNickname = profile.nickname.trim();
+      if (!sanitizedNickname) {
+        throw new Error('Nickname is required');
+      }
 
-    await updateProfile(user, { displayName: sanitizedNickname });
+      await updateProfile(user, { displayName: sanitizedNickname });
 
-    const currentMeta = getUserMeta(user.uid) ?? {
-      onboarding_completed: false,
-      created_at: new Date().toISOString(),
-      nickname: ''
-    };
-    setUserMeta(user.uid, {
-      ...currentMeta,
-      onboarding_completed: true,
-      nickname: sanitizedNickname
-    });
-    setOnboardingCompleted(true);
-    setNickname(sanitizedNickname);
-  }, [user]);
+      const currentMeta = getUserMeta(user.uid) ?? {
+        onboarding_completed: false,
+        created_at: new Date().toISOString(),
+        nickname: '',
+        avatar_color: '#7C3AED',
+        interests: [],
+        tutorial_completed: false
+      };
+      setUserMeta(user.uid, {
+        ...currentMeta,
+        onboarding_completed: true,
+        nickname: sanitizedNickname,
+        avatar_color: profile.avatarColor,
+        interests: profile.interests,
+        tutorial_completed: profile.tutorialCompleted
+      });
+      setOnboardingCompleted(true);
+      setNickname(sanitizedNickname);
+      setAvatarColor(profile.avatarColor);
+      setInterests(profile.interests);
+    },
+    [user]
+  );
 
   const signOutUser = useCallback(async () => {
     await signOut(auth);
@@ -135,6 +169,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       onboardingCompleted,
       nickname,
+      avatarColor,
+      interests,
       sendMagicLink,
       signInWithGoogle,
       completeOnboarding,
@@ -145,6 +181,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       onboardingCompleted,
       nickname,
+      avatarColor,
+      interests,
       sendMagicLink,
       signInWithGoogle,
       completeOnboarding,

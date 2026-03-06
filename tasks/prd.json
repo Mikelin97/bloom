@@ -1,0 +1,156 @@
+{
+  "projectName": "Bloom Social Reading Club",
+  "branchName": "feature/social-reading-club",
+  "description": "Transform Bloom into a social reading club application for philosophy enthusiasts. Focus: authentic virtual in-depth conversations with up to 6 people, Discord-like experience, text always visible, RAG-powered moderator.",
+  "targetAudience": "Students and early-career professionals interested in philosophy",
+  "designInspiration": "Dribbble top aesthetics - glassmorphism, smooth animations, premium feel",
+  "qualityChecks": {
+    "typecheck": "npx tsc --noEmit",
+    "lint": "npm run lint 2>/dev/null || true",
+    "build": "npm run build"
+  },
+  "userStories": [
+    {
+      "id": "INFRA-001",
+      "title": "Set up WebSocket infrastructure for real-time chat",
+      "priority": 1,
+      "acceptanceCriteria": [
+        "Add socket.io to server dependencies",
+        "Create WebSocket server alongside Express",
+        "Support room-based connections (each reading session = 1 room)",
+        "Handle connect/disconnect events with user presence",
+        "Server starts without errors"
+      ],
+      "passes": true
+    },
+    {
+      "id": "INFRA-002",
+      "title": "Create Room and Session data models",
+      "priority": 2,
+      "acceptanceCriteria": [
+        "Define Room type: id, bookId, participants (max 6), createdAt, status",
+        "Define Participant type: id, displayName, avatarColor, isHost, joinedAt",
+        "Define ChatMessage type: id, participantId, content, timestamp, anchorParagraph?",
+        "Create in-memory store for rooms (can migrate to DB later)",
+        "Export types for frontend use"
+      ],
+      "passes": true
+    },
+    {
+      "id": "UI-001",
+      "title": "Create Room Lobby page with Dribbble aesthetics",
+      "priority": 3,
+      "acceptanceCriteria": [
+        "New route /rooms showing available reading sessions",
+        "Card-based layout with glassmorphism styling",
+        "Each card shows: book title, participant count (X/6), host name",
+        "Create Room button with modal for book selection",
+        "Join button on each room card",
+        "Smooth hover animations and transitions",
+        "Responsive design (mobile + desktop)"
+      ],
+      "passes": true
+    },
+    {
+      "id": "UI-002",
+      "title": "Build split-view Reading Room layout",
+      "priority": 4,
+      "acceptanceCriteria": [
+        "Route /room/:roomId with split-panel layout",
+        "Left panel (60%): Book reader with current text",
+        "Right panel (40%): Chat interface",
+        "Resizable divider between panels",
+        "Collapsible chat panel for focused reading",
+        "Participant avatars shown at top of chat panel",
+        "Mobile: stacked layout with toggle between reader/chat"
+      ],
+      "passes": true
+    },
+    {
+      "id": "CHAT-001",
+      "title": "Implement real-time chat with paragraph anchoring",
+      "priority": 5,
+      "acceptanceCriteria": [
+        "Chat messages appear in real-time for all participants",
+        "Click paragraph in reader to anchor message to that location",
+        "Anchored messages show visual indicator linking to paragraph",
+        "Click anchored message scrolls reader to that paragraph",
+        "Message input with send button and Enter key support",
+        "Typing indicator shows when others are typing",
+        "Smooth message animations on arrival"
+      ],
+      "passes": true
+    },
+    {
+      "id": "CHAT-002",
+      "title": "Add participant presence and status",
+      "priority": 6,
+      "acceptanceCriteria": [
+        "Show online/offline status for each participant",
+        "Display participant's current reading position (paragraph)",
+        "Join/leave notifications in chat",
+        "Participant list with avatars and names",
+        "Host badge for room creator",
+        "Max 6 participants enforced on join"
+      ],
+      "passes": true
+    },
+    {
+      "id": "MOD-001",
+      "title": "Create RAG-powered AI Moderator backend",
+      "priority": 7,
+      "acceptanceCriteria": [
+        "Endpoint to generate embeddings for book content",
+        "Store embeddings (in-memory or simple file cache)",
+        "Query endpoint: given conversation context, retrieve relevant passages",
+        "Moderator response endpoint using retrieved context + conversation",
+        "Use existing OpenAI integration pattern from server/index.js",
+        "Moderator persona: wise facilitator, asks probing questions"
+      ],
+      "passes": true
+    },
+    {
+      "id": "MOD-002",
+      "title": "Integrate AI Moderator into chat UI",
+      "priority": 8,
+      "acceptanceCriteria": [
+        "Summon Moderator button in chat interface",
+        "Moderator messages styled distinctly (different avatar/color)",
+        "Auto-suggest moderator when conversation stalls (no messages for 2+ min)",
+        "Moderator references specific paragraphs (anchored to text)",
+        "Loading state while moderator generates response",
+        "Rate limit: max 1 moderator call per 30 seconds"
+      ],
+      "passes": true
+    },
+    {
+      "id": "UX-001",
+      "title": "Polish visual design to Dribbble-level aesthetics",
+      "priority": 9,
+      "acceptanceCriteria": [
+        "Consistent glassmorphism styling throughout",
+        "Smooth micro-interactions (button hover, panel transitions)",
+        "Premium color palette (deep purples, teals, warm accents)",
+        "Custom scrollbar styling",
+        "Subtle gradient backgrounds",
+        "Typography hierarchy with proper spacing",
+        "Dark mode as default with light mode option"
+      ],
+      "passes": true
+    },
+    {
+      "id": "UX-002",
+      "title": "Add onboarding flow for new users",
+      "priority": 10,
+      "acceptanceCriteria": [
+        "Welcome screen explaining the concept",
+        "Quick tutorial on paragraph anchoring",
+        "Profile setup: display name, avatar color selection",
+        "Interests selection (philosophy branches)",
+        "Skip option for returning users",
+        "Progress indicators during onboarding"
+      ],
+      "passes": true
+    }
+  ]
+}

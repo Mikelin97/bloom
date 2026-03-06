@@ -2,6 +2,9 @@ export interface UserMeta {
   onboarding_completed: boolean;
   created_at: string;
   nickname: string;
+  avatar_color?: string;
+  interests?: string[];
+  tutorial_completed?: boolean;
 }
 
 const STORAGE_PREFIX = 'bloom_user_meta';
@@ -25,12 +28,19 @@ export function getUserMeta(uid: string): UserMeta | null {
     if (
       typeof parsed.onboarding_completed === 'boolean' &&
       typeof parsed.created_at === 'string' &&
-      (typeof parsed.nickname === 'string' || typeof parsed.nickname === 'undefined')
+      (typeof parsed.nickname === 'string' || typeof parsed.nickname === 'undefined') &&
+      (typeof parsed.avatar_color === 'string' || typeof parsed.avatar_color === 'undefined') &&
+      (Array.isArray(parsed.interests) || typeof parsed.interests === 'undefined') &&
+      (typeof parsed.tutorial_completed === 'boolean' ||
+        typeof parsed.tutorial_completed === 'undefined')
     ) {
       return {
         onboarding_completed: parsed.onboarding_completed,
         created_at: parsed.created_at,
-        nickname: parsed.nickname ?? ''
+        nickname: parsed.nickname ?? '',
+        avatar_color: parsed.avatar_color,
+        interests: parsed.interests,
+        tutorial_completed: parsed.tutorial_completed
       };
     }
   } catch {

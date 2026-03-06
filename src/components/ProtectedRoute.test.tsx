@@ -125,7 +125,7 @@ describe('ProtectedRoute', () => {
     expect(screen.getByText('Onboarding Protected')).toBeInTheDocument();
   });
 
-  it('redirects onboarded users from /onboarding to /dashboard', () => {
+  it('redirects onboarded users from /onboarding to /rooms', () => {
     mocks.useAuth.mockReturnValue({
       user: { uid: 'u1' },
       loading: false,
@@ -144,10 +144,10 @@ describe('ProtectedRoute', () => {
             }
           />
           <Route
-            path="/dashboard"
+            path="/rooms"
             element={
               <ProtectedRoute>
-                <div>Dashboard Protected</div>
+                <div>Rooms Protected</div>
               </ProtectedRoute>
             }
           />
@@ -155,6 +155,6 @@ describe('ProtectedRoute', () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText('Dashboard Protected')).toBeInTheDocument();
+    expect(screen.getByText('Rooms Protected')).toBeInTheDocument();
   });
 });

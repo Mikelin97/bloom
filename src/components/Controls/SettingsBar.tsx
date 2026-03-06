@@ -26,7 +26,7 @@ export default function SettingsBar() {
     <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end md:top-4 md:bottom-auto">
       <button
         type="button"
-        className="flex h-11 w-11 items-center justify-center rounded-full border border-[var(--panel-border)] bg-[var(--panel)] text-sm font-semibold text-[var(--text)] shadow-sm backdrop-blur-md transition"
+        className="flex h-11 w-11 items-center justify-center rounded-full border border-[var(--panel-border)] bg-[var(--panel)] text-sm font-semibold text-[var(--text)] shadow-[0_10px_24px_rgba(36,24,16,0.24)] transition"
         onClick={() => setOpen((prev) => !prev)}
         aria-label="Open reading controls"
         aria-expanded={open}
@@ -35,13 +35,13 @@ export default function SettingsBar() {
       </button>
 
       {open && (
-        <div className="mt-3 w-64 space-y-4 rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-4 text-sm text-[var(--text)] shadow-lg backdrop-blur-md">
+        <div className="mt-3 w-64 space-y-4 rounded-2xl border border-[var(--panel-border)] bg-[var(--panel)] p-4 text-sm text-[var(--text)] shadow-[0_16px_34px_rgba(28,18,12,0.3)]">
           <div className="space-y-2">
-            <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--text)] opacity-70">
+            <span className="text-[11px] uppercase tracking-[0.24em] text-[var(--text)] opacity-70">
               Text
             </span>
             <select
-              className="w-full rounded-xl border border-[var(--panel-border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text)] outline-none focus:border-[var(--text-muted)]"
+              className="w-full rounded-xl border border-[var(--panel-border)] bg-[var(--panel)] px-3 py-2 text-xs text-[var(--text)] outline-none focus:border-[var(--text-muted)]"
               value={state.settings.contentId}
               onChange={(event) => handleContentChange(event.target.value)}
               aria-label="Select reading text"
@@ -55,7 +55,7 @@ export default function SettingsBar() {
           </div>
 
           <div className="flex items-center justify-between">
-            <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--text)] opacity-70">
+            <span className="text-[11px] uppercase tracking-[0.24em] text-[var(--text)] opacity-70">
               Theme
             </span>
             <div className="flex items-center gap-2">
@@ -80,7 +80,7 @@ export default function SettingsBar() {
           </div>
 
           <div className="space-y-2">
-            <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--text)] opacity-70">
+            <span className="text-[11px] uppercase tracking-[0.24em] text-[var(--text)] opacity-70">
               Font
             </span>
             <div className="flex gap-2">
@@ -102,7 +102,7 @@ export default function SettingsBar() {
           </div>
 
           <div className="flex items-center justify-between">
-            <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--text)] opacity-70">
+            <span className="text-[11px] uppercase tracking-[0.24em] text-[var(--text)] opacity-70">
               Size
             </span>
             <div className="flex items-center gap-2">
