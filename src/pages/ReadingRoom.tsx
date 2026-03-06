@@ -524,7 +524,9 @@ export default function ReadingRoom() {
     try {
       await requestModeratorReply({
         roomId,
-        conversation: messages.slice(-12)
+        conversation: messages.slice(-12),
+        userId: user?.uid || '',
+        email: user?.email || undefined
       });
       setShowModeratorSuggestion(false);
     } catch (nextError) {

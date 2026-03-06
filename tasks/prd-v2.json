@@ -1,0 +1,130 @@
+{
+  "projectName": "Bloom Social v2 - Institutional Grade",
+  "branchName": "feature/v2-institutional",
+  "deadline": "2026-03-06T04:23:00-05:00",
+  "description": "Five major improvements to bring Bloom Social to institutional/production grade quality.",
+  "qualityChecks": {
+    "typecheck": "npx tsc --noEmit",
+    "lint": "npm run lint 2>/dev/null || true",
+    "build": "npm run build",
+    "test": "npm test"
+  },
+  "epics": [
+    {
+      "id": "ANCHOR-UX",
+      "title": "Intuitive Paragraph Anchoring",
+      "priority": 1,
+      "description": "Research-backed, best-in-class anchoring UX. Current implementation too rigid.",
+      "research": [
+        "Medium.com highlights - inline selection popover",
+        "Kindle - tap to highlight, contextual actions",
+        "Hypothesis.is - sidebar annotations",
+        "Google Docs - comment threads on selections",
+        "Notion - inline discussions"
+      ],
+      "targetUX": "Selection-based popover with quick actions (Anchor, Highlight, Ask AI). No mode switching required. Anchor indicator appears as subtle margin dot that expands on hover.",
+      "acceptanceCriteria": [
+        "Text selection triggers floating action popover (not click on paragraph)",
+        "Popover shows: 'Anchor to Chat', 'Ask Moderator', 'Highlight'",
+        "Anchored paragraphs show subtle brass dot in margin",
+        "Clicking anchor dot in chat scrolls reader + highlights paragraph",
+        "Mobile: long-press to select, same popover",
+        "Keyboard: Cmd+Shift+A to anchor current selection",
+        "Smooth animations, feels native"
+      ]
+    },
+    {
+      "id": "VOICE-CHAT",
+      "title": "Discord-Style Voice Chat",
+      "priority": 2,
+      "description": "Real-time voice chat in reading rooms, as easy as Discord.",
+      "targetUX": "One-click join voice. See who's speaking (voice activity indicator). Push-to-talk or voice activation. Mute/deafen controls. Low latency.",
+      "techStack": {
+        "option1": "LiveKit (open source, WebRTC)",
+        "option2": "Daily.co (simpler API)",
+        "option3": "Agora (enterprise)"
+      },
+      "acceptanceCriteria": [
+        "Voice toggle button in room header",
+        "Visual indicator showing who's speaking (green ring around avatar)",
+        "Mute/unmute self button",
+        "Push-to-talk option (spacebar hold)",
+        "Voice activity detection (auto-unmute when speaking)",
+        "Graceful fallback if no mic permission",
+        "< 200ms latency target",
+        "Works on mobile browsers"
+      ]
+    },
+    {
+      "id": "INVITE-LINKS",
+      "title": "Shareable Room Invite Links",
+      "priority": 3,
+      "description": "One-click invite link generation and join flow.",
+      "acceptanceCriteria": [
+        "Share button in room generates unique invite URL",
+        "URL format: /join/:inviteCode",
+        "Invite codes are short (6-8 chars), human-readable",
+        "Clicking link → login if needed → auto-join room",
+        "Host can regenerate/revoke invite link",
+        "Link shows room preview (book title, participant count) before joining",
+        "Copy-to-clipboard with toast confirmation"
+      ]
+    },
+    {
+      "id": "INFRA",
+      "title": "Production Architecture",
+      "priority": 4,
+      "description": "Dockerized, CI/CD ready, proper database setup.",
+      "components": {
+        "database": "PostgreSQL (users, rooms, messages) + Redis (presence, sessions)",
+        "backend": "Express with Prisma ORM",
+        "frontend": "Vite + React (existing)",
+        "containerization": "Docker Compose (dev) + Dockerfiles for prod",
+        "cicd": "GitHub Actions workflow"
+      },
+      "acceptanceCriteria": [
+        "docker-compose.yml for local dev (postgres, redis, app)",
+        "Dockerfile for production build (multi-stage, optimized)",
+        "Prisma schema for users, rooms, participants, messages, invites",
+        "Database migrations setup",
+        ".github/workflows/ci.yml (lint, test, build, docker push)",
+        "Environment variable management (.env.example updated)",
+        "Health check endpoints (/health, /ready)",
+        "README updated with deployment instructions"
+      ]
+    },
+    {
+      "id": "PAYMENTS",
+      "title": "Stripe Payment Integration",
+      "priority": 5,
+      "description": "Subscription billing for premium features.",
+      "tiers": [
+        {"name": "Free", "price": 0, "features": ["Join public rooms", "Basic chat", "1 room creation/month"]},
+        {"name": "Scholar", "price": 9.99, "features": ["Unlimited rooms", "Voice chat", "AI moderator", "Private rooms"]},
+        {"name": "Institution", "price": 49.99, "features": ["Everything", "Custom branding", "Analytics", "Priority support"]}
+      ],
+      "acceptanceCriteria": [
+        "Stripe Checkout integration for subscriptions",
+        "Webhook handler for subscription events",
+        "User model has subscriptionTier field",
+        "Feature gating based on tier (middleware)",
+        "Billing portal link for managing subscription",
+        "Pricing page with tier comparison",
+        "Upgrade prompts when hitting free tier limits",
+        "Test mode working with Stripe test keys"
+      ]
+    }
+  ],
+  "parallelizationStrategy": {
+    "track1": "ANCHOR-UX (frontend-heavy, independent)",
+    "track2": "VOICE-CHAT (requires LiveKit setup, semi-independent)", 
+    "track3": "INVITE-LINKS + INFRA + PAYMENTS (backend-heavy, sequential)"
+  },
+  "timeAllocation": {
+    "planning": "10 min",
+    "track1_anchorUX": "35 min",
+    "track2_voiceChat": "35 min", 
+    "track3_backend": "60 min",
+    "integration_testing": "20 min"
+  }
+}
